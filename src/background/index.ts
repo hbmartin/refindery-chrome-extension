@@ -1,0 +1,421 @@
+// Service-worker orchestrator: message routing, queue drain, status polling,
+// cooldown/403 bookkeeping, badge, and notifications.
+
+import type {
+  IngestPageRequest,
+  QueueItem,
+  RuntimeMessage,
+  ShouldCaptureReply,
+} from '@/common/types';
+import { getSettings } from '@/common/settings';
+import { canonicalKey, domainOf, hostOf } from '@/common/canonical';
+import { decideSkip, hostMatchesDomain } from '@/common/exclusions';
+import { sendBackoffMs } from '@/common/backoff';
+import type { ServerConfig } from './client';
+import {
+  deleteBlacklist,
+  forget,
+  isReady,
+  listBlacklist,
+  postPage,
+} from './client';
+import * as queue from './queue';
+import { pollDue, pendingCount, trackPage, retryDeadPage } from './poller';
+import { getRecent, upsertRecent, updateBadge } from './recent';
+import { notifyServerDown } from './notify';
+
+const MAINTENANCE_ALARM = 'maintenance';
+const DRAIN_BATCH = 10;
+
+// ── Cooldown (per canonical URL) ─────────────────────────────────────────
+
+const COOLDOWN_KEY = 'cooldown';
+
+async function getCooldownMap(): Promise<Record<string, number>> {
+  const raw = await chrome.storage.local.get(COOLDOWN_KEY);
+  return (raw[COOLDOWN_KEY] as Record<string, number>) ?? {};
+}
+
+async function isOnCooldown(key: string, windowMs: number): Promise<boolean> {
+  const map = await getCooldownMap();
+  const last = map[key];
+  return last != null && Date.now() - last < windowMs;
+}
+
+async function markSent(key: string, windowMs: number): Promise<void> {
+  const map = await getCooldownMap();
+  map[key] = Date.now();
+  // prune stale entries so the map can't grow unbounded
+  const cutoff = Date.now() - windowMs;
+  for (const k of Object.keys(map)) {
+    if (map[k] < cutoff) delete map[k];
+  }
+  await chrome.storage.local.set({ [COOLDOWN_KEY]: map });
+}
+
+// ── Cached server-blacklist patterns (avoid re-POSTing known-403 targets) ──
+
+const BLOCKED_KEY = 'blocked403';
+
+async function getBlockedPatterns(): Promise<string[]> {
+  const raw = await chrome.storage.local.get(BLOCKED_KEY);
+  return (raw[BLOCKED_KEY] as string[]) ?? [];
+}
+
+async function addBlockedPattern(pattern: string): Promise<void> {
+  const list = await getBlockedPatterns();
+  if (!list.includes(pattern)) {
+    list.push(pattern);
+    await chrome.storage.local.set({ [BLOCKED_KEY]: list });
+  }
+}
+
+async function isBlocked(url: string): Promise<boolean> {
+  const host = hostOf(url);
+  if (!host) return false;
+  const patterns = await getBlockedPatterns();
+  return patterns.some(
+    (p) => hostMatchesDomain(host, p) || url.startsWith(p),
+  );
+}
+
+// ── Auth-error flag (drives the badge "!" state) ─────────────────────────
+
+const AUTH_ERR_KEY = 'authError';
+async function setAuthError(v: boolean): Promise<void> {
+  await chrome.storage.local.set({ [AUTH_ERR_KEY]: v });
+}
+async function hasAuthError(): Promise<boolean> {
+  const raw = await chrome.storage.local.get(AUTH_ERR_KEY);
+  return Boolean(raw[AUTH_ERR_KEY]);
+}
+
+// ── Capture decision (called by content script before it serializes) ──────
+
+async function shouldCapture(url: string): Promise<ShouldCaptureReply> {
+  const settings = await getSettings();
+  const decision = decideSkip(url, {
+    incognito: false, // sender.tab.incognito is checked separately below
+    paused: settings.paused,
+    settings,
+  });
+  if (decision.skip) return { capture: false, reason: decision.reason };
+
+  if (await isBlocked(url)) return { capture: false, reason: 'server-blacklisted' };
+
+  const key = canonicalKey(url);
+  if (key && (await isOnCooldown(key, settings.cooldownMs))) {
+    return { capture: false, reason: 'cooldown' };
+  }
+  return { capture: true };
+}
+
+// ── Ingest request builder ────────────────────────────────────────────────
+
+function buildRequest(item: QueueItem): IngestPageRequest {
+  const p = item.payload;
+  const useHtml = p.bodyHtml != null && !item.forceUrlOnly;
+  return {
+    url: p.url,
+    title: p.title,
+    ...(useHtml ? { body_html: p.bodyHtml } : {}),
+    fetched_at: p.fetchedAt,
+    source: 'chrome-extension',
+    metadata: {
+      trigger: p.trigger,
+      referrer: p.referrer,
+      favicon: p.favicon,
+      body_bytes: p.bodyBytes,
+      url_only: !useHtml,
+    },
+  };
+}
+
+async function serverConfig(): Promise<ServerConfig | null> {
+  const s = await getSettings();
+  if (!s.token || !s.baseUrl) return null;
+  return { baseUrl: s.baseUrl, token: s.token };
+}
+
+// ── Queue drain ────────────────────────────────────────────────────────────
+
+async function drainQueue(): Promise<void> {
+  const cfg = await serverConfig();
+  if (!cfg) return; // not configured yet
+  if (!(await isReady(cfg.baseUrl))) {
+    if ((await queue.count()) > 0) await notifyServerDown();
+    return;
+  }
+
+  const items = await queue.due(Date.now(), DRAIN_BATCH);
+  for (const item of items) {
+    const outcome = await postPage(cfg, buildRequest(item));
+    const p = item.payload;
+    const domain = domainOf(p.url) ?? '';
+
+    switch (outcome.kind) {
+      case 'accepted': {
+        await setAuthError(false);
+        if (p.canonicalKey) await markSentForItem(p.canonicalKey);
+        await upsertRecent({
+          localId: item.id,
+          url: p.url,
+          domain,
+          title: p.title,
+          state: 'queued',
+          pageId: outcome.body.page_id,
+        });
+        await trackPage(item.id, outcome.body.page_id);
+        await queue.remove(item.id);
+        break;
+      }
+      case 'revisit': {
+        await setAuthError(false);
+        if (p.canonicalKey) await markSentForItem(p.canonicalKey);
+        await upsertRecent({
+          localId: item.id,
+          url: p.url,
+          domain,
+          title: p.title,
+          state: 'revisit',
+          pageId: outcome.body.page_id,
+          contentChanged: outcome.body.content_hash_differs,
+        });
+        await queue.remove(item.id);
+        break;
+      }
+      case 'blacklisted': {
+        await setAuthError(false);
+        await addBlockedPattern(outcome.body.pattern);
+        await upsertRecent({
+          localId: item.id,
+          url: p.url,
+          domain,
+          title: p.title,
+          state: 'blacklisted',
+        });
+        await queue.remove(item.id);
+        break;
+      }
+      case 'no_extraction': {
+        // server can't extract the HTML — resend as URL-only
+        if (!item.forceUrlOnly) {
+          item.forceUrlOnly = true;
+          item.nextAttemptAt = Date.now();
+          await queue.update(item);
+        } else {
+          await queue.remove(item.id); // already tried URL-only; give up
+          await upsertRecent({
+            localId: item.id,
+            url: p.url,
+            domain,
+            title: p.title,
+            state: 'error',
+            lastError: 'no extraction path',
+          });
+        }
+        break;
+      }
+      case 'invalid': {
+        await upsertRecent({
+          localId: item.id,
+          url: p.url,
+          domain,
+          title: p.title,
+          state: 'error',
+          lastError: outcome.detail,
+        });
+        await queue.remove(item.id); // bad payload — don't retry blindly
+        break;
+      }
+      case 'unauthorized': {
+        await setAuthError(true);
+        return; // stop the whole drain; token is bad
+      }
+      case 'network_error':
+      case 'server_error': {
+        item.attempts += 1;
+        item.nextAttemptAt = Date.now() + sendBackoffMs(item.attempts);
+        await queue.update(item);
+        break;
+      }
+    }
+  }
+}
+
+async function markSentForItem(key: string): Promise<void> {
+  const s = await getSettings();
+  await markSent(key, s.cooldownMs);
+}
+
+// ── Tick: drain + poll + badge, self-chaining while work remains ──────────
+
+let ticking = false;
+async function tick(): Promise<void> {
+  if (ticking) return;
+  ticking = true;
+  try {
+    await drainQueue();
+    const cfg = await serverConfig();
+    let morePolls = false;
+    if (cfg) morePolls = await pollDue(cfg);
+
+    const qCount = await queue.count();
+    await updateBadge({ queueCount: qCount, error: await hasAuthError() });
+
+    if (qCount > 0 || morePolls) {
+      // keep making progress faster than the 1-min maintenance alarm
+      setTimeout(() => void tick(), 3000);
+    }
+  } finally {
+    ticking = false;
+  }
+}
+
+// ── Message routing ────────────────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener(
+  (msg: RuntimeMessage, sender, sendResponse) => {
+    handleMessage(msg, sender).then(sendResponse);
+    return true; // async
+  },
+);
+
+async function handleMessage(
+  msg: RuntimeMessage,
+  sender: chrome.runtime.MessageSender,
+): Promise<unknown> {
+  switch (msg.type) {
+    case 'shouldCapture': {
+      if (sender.tab?.incognito) return { capture: false, reason: 'incognito' };
+      return shouldCapture(msg.url);
+    }
+    case 'capture': {
+      const item = await queue.enqueue(msg.payload);
+      await upsertRecent({
+        localId: item.id,
+        url: msg.payload.url,
+        domain: domainOf(msg.payload.url) ?? '',
+        title: msg.payload.title,
+        state: 'queued',
+      });
+      void tick();
+      return { ok: true };
+    }
+    case 'getState': {
+      const [settings, recent, queueCount, pending] = await Promise.all([
+        getSettings(),
+        getRecent(),
+        queue.count(),
+        pendingCount(),
+      ]);
+      return {
+        settings,
+        recent,
+        queueCount,
+        pending,
+        authError: await hasAuthError(),
+      };
+    }
+    case 'setPaused': {
+      const { setSettings } = await import('@/common/settings');
+      await setSettings({ paused: msg.paused });
+      return { ok: true };
+    }
+    case 'forgetDomain': {
+      const cfg = await serverConfig();
+      if (!cfg) return { ok: false, error: 'not configured' };
+      try {
+        const res = await forget(cfg, { domain: msg.domain, reason: msg.reason });
+        await addBlockedPattern(res.pattern);
+        return { ok: true, result: res };
+      } catch (e) {
+        return { ok: false, error: String((e as Error).message) };
+      }
+    }
+    case 'forgetUrl': {
+      const cfg = await serverConfig();
+      if (!cfg) return { ok: false, error: 'not configured' };
+      try {
+        const res = await forget(cfg, { url: msg.url, reason: msg.reason });
+        await addBlockedPattern(res.pattern);
+        return { ok: true, result: res };
+      } catch (e) {
+        return { ok: false, error: String((e as Error).message) };
+      }
+    }
+    case 'listBlacklist': {
+      const cfg = await serverConfig();
+      if (!cfg) return { ok: false, error: 'not configured', entries: [] };
+      try {
+        const res = await listBlacklist(cfg);
+        return { ok: true, entries: res.entries };
+      } catch (e) {
+        return { ok: false, error: String((e as Error).message), entries: [] };
+      }
+    }
+    case 'deleteBlacklist': {
+      const cfg = await serverConfig();
+      if (!cfg) return { ok: false, error: 'not configured' };
+      try {
+        await deleteBlacklist(cfg, msg.id);
+        // The cached 403 set is only an optimization; clear it so unblocked
+        // targets can be captured again.
+        await chrome.storage.local.set({ [BLOCKED_KEY]: [] });
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String((e as Error).message) };
+      }
+    }
+    case 'retryDead': {
+      const cfg = await serverConfig();
+      if (!cfg) return { ok: false, error: 'not configured' };
+      const entry = (await getRecent()).find((e) => e.localId === msg.localId);
+      if (!entry?.pageId) return { ok: false, error: 'no page id' };
+      const ok = await retryDeadPage(cfg, entry.pageId);
+      if (ok) {
+        await upsertRecent({ localId: msg.localId, state: 'queued' });
+        await trackPage(msg.localId, entry.pageId);
+        void tick();
+      }
+      return { ok };
+    }
+    case 'testConnection': {
+      const cfg = await serverConfig();
+      if (!cfg) return { ready: false, authOk: false, error: 'not configured' };
+      const ready = await isReady(cfg.baseUrl);
+      let authOk = false;
+      try {
+        await listBlacklist(cfg);
+        authOk = true;
+        await setAuthError(false);
+      } catch {
+        authOk = false;
+      }
+      return { ready, authOk };
+    }
+    case 'settingsChanged': {
+      void tick();
+      return { ok: true };
+    }
+  }
+}
+
+// ── Lifecycle wiring ────────────────────────────────────────────────────────
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+  void tick();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+  void tick();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === MAINTENANCE_ALARM) void tick();
+});
+
+// Kick once when the worker spins up (e.g. after being suspended).
+void tick();
