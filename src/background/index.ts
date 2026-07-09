@@ -27,6 +27,8 @@ import { revisitDisposition } from './revisit';
 
 const MAINTENANCE_ALARM = 'maintenance';
 const DRAIN_BATCH = 10;
+const RELEASE_BACKOFFS_REQUEST_KEY = 'releaseBackoffsRequest';
+const RELEASE_BACKOFFS_HANDLED_KEY = 'releaseBackoffsHandled';
 
 // ── Cooldown (per canonical URL) ─────────────────────────────────────────
 
@@ -269,7 +271,16 @@ async function markSentForItem(key: string): Promise<void> {
 
 let ticking = false;
 let tickRequested = false;
-let releaseBackoffsRequested = false;
+
+async function pendingReleaseBackoffsRequest(): Promise<string | null> {
+  const [requestedRaw, handledRaw] = await Promise.all([
+    chrome.storage.local.get(RELEASE_BACKOFFS_REQUEST_KEY),
+    chrome.storage.local.get(RELEASE_BACKOFFS_HANDLED_KEY),
+  ]);
+  const requested = requestedRaw[RELEASE_BACKOFFS_REQUEST_KEY];
+  const handled = handledRaw[RELEASE_BACKOFFS_HANDLED_KEY];
+  return typeof requested === 'string' && requested !== handled ? requested : null;
+}
 
 /**
  * Callers must go through scheduleTick(): a direct call while a tick is
@@ -278,15 +289,19 @@ let releaseBackoffsRequested = false;
 export async function tick(): Promise<void> {
   if (ticking) return;
   ticking = true;
+  let moreWork = false;
   try {
-    let moreWork = false;
     do {
       tickRequested = false;
-      if (releaseBackoffsRequested) {
-        // Clear the flag only after the release succeeds so a failed release
-        // is retried on the next tick instead of being silently dropped.
+      const releaseRequest = await pendingReleaseBackoffsRequest();
+      if (releaseRequest) {
+        // Mark this durable request handled only after the release succeeds.
+        // A newer request written during the release retains a different ID
+        // and is therefore processed by the next coalesced pass.
         await queue.releaseBackoffs();
-        releaseBackoffsRequested = false;
+        await chrome.storage.local.set({
+          [RELEASE_BACKOFFS_HANDLED_KEY]: releaseRequest,
+        });
       }
 
       const ready = await drainQueue();
@@ -299,13 +314,14 @@ export async function tick(): Promise<void> {
 
       moreWork = ready && (qCount > 0 || morePolls);
     } while (tickRequested);
-
-    if (moreWork) {
-      // keep making progress faster than the 1-min maintenance alarm
-      setTimeout(scheduleTick, 3000);
-    }
   } finally {
     ticking = false;
+    if (moreWork) {
+      // Keep making progress faster than the 1-min maintenance alarm. This is
+      // deliberately in finally so a successful pass still schedules its
+      // follow-up if a later coalesced pass fails.
+      setTimeout(scheduleTick, 3000);
+    }
   }
 }
 
@@ -453,7 +469,9 @@ export async function handleMessage(
       // waiting out retry backoffs accrued while the old settings were broken.
       // Defer the release to the next tick pass so an in-flight request using
       // the old settings cannot write a fresh backoff after we clear them.
-      releaseBackoffsRequested = true;
+      await chrome.storage.local.set({
+        [RELEASE_BACKOFFS_REQUEST_KEY]: crypto.randomUUID(),
+      });
       scheduleTick();
       return { ok: true };
     }

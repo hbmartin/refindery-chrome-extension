@@ -348,7 +348,7 @@ describe('tick and message orchestration', () => {
     await vi.waitFor(() => expect(updateBadge).toHaveBeenCalled());
   });
 
-  it('retries a failed backoff release on the next tick', async () => {
+  it('persists and retries a failed backoff release on the next tick', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.mocked(queue.releaseBackoffs)
       .mockRejectedValueOnce(new Error('database unavailable'))
@@ -360,12 +360,75 @@ describe('tick and message orchestration', () => {
     await vi.waitFor(() => expect(consoleError).toHaveBeenCalledOnce());
     expect(queue.releaseBackoffs).toHaveBeenCalledOnce();
     expect(updateBadge).not.toHaveBeenCalled();
+    expect(storage.releaseBackoffsRequest).toEqual(expect.any(String));
+    expect(storage.releaseBackoffsHandled).toBeUndefined();
 
-    // The next maintenance tick must retry the release rather than drop it.
+    // The next maintenance tick, including one in a restarted worker, reads
+    // the durable request and retries rather than dropping it.
     await tick();
 
     expect(queue.releaseBackoffs).toHaveBeenCalledTimes(2);
     expect(updateBadge).toHaveBeenCalled();
+    expect(storage.releaseBackoffsHandled).toBe(storage.releaseBackoffsRequest);
+  });
+
+  it('does not acknowledge a newer backoff-release request', async () => {
+    let finishFirstRelease!: () => void;
+    vi.mocked(queue.releaseBackoffs)
+      .mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finishFirstRelease = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    await expect(handleMessage({ type: 'settingsChanged' }, {})).resolves.toEqual({
+      ok: true,
+    });
+    await vi.waitFor(() => expect(queue.releaseBackoffs).toHaveBeenCalledOnce());
+    const firstRequest = storage.releaseBackoffsRequest;
+
+    await expect(handleMessage({ type: 'settingsChanged' }, {})).resolves.toEqual({
+      ok: true,
+    });
+    const secondRequest = storage.releaseBackoffsRequest;
+    expect(secondRequest).not.toBe(firstRequest);
+
+    finishFirstRelease();
+
+    await vi.waitFor(() => expect(queue.releaseBackoffs).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => {
+      expect(storage.releaseBackoffsHandled).toBe(secondRequest);
+    });
+    await vi.waitFor(() => expect(updateBadge).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps a follow-up timer when a later coalesced pass fails', async () => {
+    const queued = item();
+    const captured = item({ id: 'local-2' });
+    vi.mocked(queue.due)
+      .mockResolvedValueOnce([queued])
+      .mockRejectedValueOnce(new Error('database unavailable'));
+    vi.mocked(queue.count).mockResolvedValueOnce(1);
+    vi.mocked(queue.enqueue).mockResolvedValueOnce(captured);
+    let resolvePost!: (outcome: IngestOutcome) => void;
+    vi.mocked(postPage).mockReturnValueOnce(
+      new Promise<IngestOutcome>((resolve) => {
+        resolvePost = resolve;
+      }),
+    );
+    const timeout = vi.spyOn(globalThis, 'setTimeout').mockImplementation(() => 0 as never);
+
+    const activeTick = tick();
+    await vi.waitFor(() => expect(postPage).toHaveBeenCalledOnce());
+    await expect(
+      handleMessage({ type: 'capture', payload: captured.payload }, {}),
+    ).resolves.toEqual({ ok: true });
+
+    resolvePost({ kind: 'invalid', detail: 'stop' });
+    await expect(activeTick).rejects.toThrow('database unavailable');
+
+    expect(timeout).toHaveBeenCalledWith(expect.any(Function), 3000);
   });
 
   it('clears stale errors when retrying a dead page', async () => {
