@@ -271,15 +271,22 @@ let ticking = false;
 let tickRequested = false;
 let releaseBackoffsRequested = false;
 
+/**
+ * Callers must go through scheduleTick(): a direct call while a tick is
+ * already running returns without coalescing another pass.
+ */
 export async function tick(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
+    let moreWork = false;
     do {
       tickRequested = false;
       if (releaseBackoffsRequested) {
-        releaseBackoffsRequested = false;
+        // Clear the flag only after the release succeeds so a failed release
+        // is retried on the next tick instead of being silently dropped.
         await queue.releaseBackoffs();
+        releaseBackoffsRequested = false;
       }
 
       const ready = await drainQueue();
@@ -290,11 +297,13 @@ export async function tick(): Promise<void> {
       const qCount = await queue.count();
       await updateBadge({ queueCount: qCount, error: await hasAuthError() });
 
-      if (ready && (qCount > 0 || morePolls)) {
-        // keep making progress faster than the 1-min maintenance alarm
-        setTimeout(scheduleTick, 3000);
-      }
+      moreWork = ready && (qCount > 0 || morePolls);
     } while (tickRequested);
+
+    if (moreWork) {
+      // keep making progress faster than the 1-min maintenance alarm
+      setTimeout(scheduleTick, 3000);
+    }
   } finally {
     ticking = false;
   }

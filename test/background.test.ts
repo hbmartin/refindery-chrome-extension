@@ -348,6 +348,26 @@ describe('tick and message orchestration', () => {
     await vi.waitFor(() => expect(updateBadge).toHaveBeenCalled());
   });
 
+  it('retries a failed backoff release on the next tick', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.mocked(queue.releaseBackoffs)
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockResolvedValueOnce(undefined);
+
+    await expect(handleMessage({ type: 'settingsChanged' }, {})).resolves.toEqual({
+      ok: true,
+    });
+    await vi.waitFor(() => expect(consoleError).toHaveBeenCalledOnce());
+    expect(queue.releaseBackoffs).toHaveBeenCalledOnce();
+    expect(updateBadge).not.toHaveBeenCalled();
+
+    // The next maintenance tick must retry the release rather than drop it.
+    await tick();
+
+    expect(queue.releaseBackoffs).toHaveBeenCalledTimes(2);
+    expect(updateBadge).toHaveBeenCalled();
+  });
+
   it('clears stale errors when retrying a dead page', async () => {
     vi.mocked(getRecent).mockResolvedValueOnce([
       {
