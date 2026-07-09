@@ -15,6 +15,7 @@ interface PendingPoll {
   pageId: string;
   pollCount: number;
   nextPollAt: number;
+  revision?: number;
 }
 
 const PENDING_KEY = 'pending';
@@ -51,8 +52,17 @@ export async function pendingCount(): Promise<number> {
 export async function trackPage(localId: string, pageId: string): Promise<void> {
   return withPendingLock(async () => {
     const list = await getPending();
-    if (list.some((p) => p.localId === localId)) return;
-    list.push({ localId, pageId, pollCount: 0, nextPollAt: Date.now() });
+    const existing = list.find((p) => p.localId === localId);
+    if (existing) {
+      // A retry reuses the local id. Bump the revision so an older in-flight
+      // terminal poll cannot remove the newly tracked attempt during merge.
+      existing.pageId = pageId;
+      existing.pollCount = 0;
+      existing.nextPollAt = Date.now();
+      existing.revision = (existing.revision ?? 0) + 1;
+    } else {
+      list.push({ localId, pageId, pollCount: 0, nextPollAt: Date.now(), revision: 0 });
+    }
     await setPending(list);
   });
 }
@@ -101,7 +111,13 @@ export async function pollDue(cfg: ServerConfig): Promise<boolean> {
   return withPendingLock(async () => {
     // Re-read and merge so pages tracked while requests were in flight survive.
     const merged = (await getPending())
-      .map((existing) => due.find((d) => d.localId === existing.localId) ?? existing)
+      .map((existing) =>
+        due.find(
+          (d) =>
+            d.localId === existing.localId &&
+            (d.revision ?? 0) === (existing.revision ?? 0),
+        ) ?? existing,
+      )
       .filter((p) => p.pollCount !== -1);
     await setPending(merged);
     return merged.length > 0;

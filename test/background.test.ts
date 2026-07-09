@@ -290,6 +290,41 @@ describe('tick and message orchestration', () => {
     await first;
   });
 
+  it('releases backoffs after an in-flight old-settings tick before retrying', async () => {
+    const queued = item();
+    vi.mocked(queue.due)
+      .mockResolvedValueOnce([queued])
+      .mockResolvedValueOnce([queued]);
+    let resolvePost!: (outcome: IngestOutcome) => void;
+    vi.mocked(postPage)
+      .mockReturnValueOnce(
+        new Promise<IngestOutcome>((resolve) => {
+          resolvePost = resolve;
+        }),
+      )
+      .mockResolvedValueOnce({ kind: 'invalid', detail: 'stop' });
+
+    const activeTick = tick();
+    await vi.waitFor(() => expect(postPage).toHaveBeenCalledOnce());
+
+    await expect(handleMessage({ type: 'settingsChanged' }, {})).resolves.toEqual({
+      ok: true,
+    });
+    expect(queue.releaseBackoffs).not.toHaveBeenCalled();
+
+    resolvePost({ kind: 'unauthorized' });
+    await activeTick;
+
+    expect(queue.releaseBackoffs).toHaveBeenCalledOnce();
+    expect(postPage).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(queue.releaseBackoffs).mock.invocationCallOrder[0]).toBeGreaterThan(
+      vi.mocked(queue.update).mock.invocationCallOrder[0],
+    );
+    expect(vi.mocked(postPage).mock.invocationCallOrder[1]).toBeGreaterThan(
+      vi.mocked(queue.releaseBackoffs).mock.invocationCallOrder[0],
+    );
+  });
+
   it('always responds when asynchronous message handling rejects', async () => {
     registerMessageListener();
     vi.mocked(queue.enqueue).mockRejectedValueOnce(new Error('database unavailable'));
@@ -309,7 +344,8 @@ describe('tick and message orchestration', () => {
     await expect(handleMessage({ type: 'settingsChanged' }, {})).resolves.toEqual({
       ok: true,
     });
-    expect(queue.releaseBackoffs).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(queue.releaseBackoffs).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(updateBadge).toHaveBeenCalled());
   });
 
   it('clears stale errors when retrying a dead page', async () => {

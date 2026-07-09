@@ -17,6 +17,7 @@ vi.mock('@/background/notify', () => ({
 import { getStatus } from '@/background/client';
 import { pollDue, trackPage } from '@/background/poller';
 import { upsertRecent } from '@/background/recent';
+import { notifyDead } from '@/background/notify';
 
 const cfg = { baseUrl: 'http://127.0.0.1:8000', token: 'token' };
 let storage: Record<string, unknown>;
@@ -74,6 +75,39 @@ describe('pending poll serialization', () => {
     expect(storage.pending).toEqual([
       expect.objectContaining({ localId: 'local-1', pollCount: 1 }),
       expect.objectContaining({ localId: 'local-2', pageId: 'page-2' }),
+    ]);
+  });
+
+  it('preserves a retry tracked while a terminal poll is finishing', async () => {
+    storage.pending = [
+      { localId: 'local-1', pageId: 'page-1', pollCount: 2, nextPollAt: 0 },
+    ];
+    vi.mocked(getStatus).mockResolvedValueOnce({
+      page_id: 'page-1',
+      status: 'dead',
+      last_error: 'indexing failed',
+    });
+    let finishNotification!: () => void;
+    vi.mocked(notifyDead).mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishNotification = resolve;
+      }),
+    );
+
+    const polling = pollDue(cfg);
+    await vi.waitFor(() => expect(notifyDead).toHaveBeenCalledOnce());
+
+    await trackPage('local-1', 'page-1');
+    finishNotification();
+    await polling;
+
+    expect(storage.pending).toEqual([
+      expect.objectContaining({
+        localId: 'local-1',
+        pageId: 'page-1',
+        pollCount: 0,
+        revision: 1,
+      }),
     ]);
   });
 

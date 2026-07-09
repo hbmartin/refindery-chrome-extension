@@ -98,12 +98,28 @@ export async function remove(id: string): Promise<void> {
  * server settings so a fixed token/URL doesn't wait out stale retry delays.
  */
 export async function releaseBackoffs(): Promise<void> {
-  const now = Date.now();
-  const items = (await all()).filter((i) => i.nextAttemptAt > now);
-  for (const item of items) {
-    item.nextAttemptAt = now;
-    await update(item);
-  }
+  const db = await openDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const s = tx.objectStore(STORE);
+    const now = Date.now();
+    const cursorReq = s.openCursor();
+
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result;
+      if (!cursor) return;
+      const item = cursor.value as QueueItem;
+      if (item.nextAttemptAt > now) {
+        item.nextAttemptAt = now;
+        cursor.update(item);
+      }
+      cursor.continue();
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error('Queue backoff release failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('Queue backoff release aborted'));
+  });
 }
 
 export async function clear(): Promise<void> {
