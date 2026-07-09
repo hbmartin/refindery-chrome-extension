@@ -239,9 +239,13 @@ export async function drainQueue(): Promise<boolean> {
       }
       case 'unauthorized': {
         await setAuthError(true);
-        item.attempts += 1;
-        item.nextAttemptAt = Date.now() + sendBackoffMs(item.attempts);
-        await queue.update(item);
+        // Every remaining send would fail the same way, so back off the whole
+        // rest of the batch instead of burning one request per tick.
+        for (const pending of items.slice(items.indexOf(item))) {
+          pending.attempts += 1;
+          pending.nextAttemptAt = Date.now() + sendBackoffMs(pending.attempts);
+          await queue.update(pending);
+        }
         return false; // stop the whole drain; token is bad
       }
       case 'network_error':
@@ -421,6 +425,9 @@ export async function handleMessage(
       return { ready, authOk };
     }
     case 'settingsChanged': {
+      // A fixed token or server URL should take effect immediately rather than
+      // waiting out retry backoffs accrued while the old settings were broken.
+      await queue.releaseBackoffs();
       scheduleTick();
       return { ok: true };
     }

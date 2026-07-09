@@ -35,3 +35,28 @@ rules:
       include:
         - /src/background/index.ts
     pattern: $PROMISE.then(sendResponse)
+
+  - id: refindery-indexeddb-transaction-no-request-after-await
+    message: Schedule follow-up IndexedDB requests from request event callbacks so the transaction remains active.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include:
+        - /src/background/*.ts
+    pattern-either:
+      - pattern: |
+          const $TX = $DB.transaction(...);
+          ...
+          const $STORE = $TX.objectStore(...);
+          ...
+          const $RESULT = await $PROMISE;
+          ...
+          $STORE.$METHOD(...);
+      - pattern: |
+          const $TX = $DB.transaction(...);
+          ...
+          const $STORE = $TX.objectStore(...);
+          ...
+          await $PROMISE;
+          ...
+          $STORE.$METHOD(...);

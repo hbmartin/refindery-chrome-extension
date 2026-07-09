@@ -67,4 +67,43 @@ describe('queue', () => {
     // oldest five (0..4) should have been dropped; first remaining is #5
     expect(all[0].payload.url).toBe('https://ex.com/5');
   });
+
+  it('does not over-delete when enforceCap runs concurrently', async () => {
+    for (let i = 0; i < MAX_QUEUE_ITEMS; i++) {
+      await queue.enqueue(payload(i));
+    }
+    // Inject overflow via update() (which bypasses the per-enqueue cap) so two
+    // concurrent enforceCap calls both observe the same oversized queue.
+    for (let i = 0; i < 6; i++) {
+      await queue.update({
+        id: `overflow-${i}`,
+        payload: payload(1000 + i),
+        attempts: 0,
+        enqueuedAt: Date.now(),
+        nextAttemptAt: Date.now(),
+        forceUrlOnly: false,
+      });
+    }
+
+    const dropped = await Promise.all([queue.enforceCap(), queue.enforceCap()]);
+
+    expect(dropped.reduce((sum, count) => sum + count, 0)).toBe(6);
+    expect(await queue.count()).toBe(MAX_QUEUE_ITEMS);
+  });
+
+  it('releaseBackoffs makes backed-off items immediately due', async () => {
+    const a = await queue.enqueue(payload(1));
+    const b = await queue.enqueue(payload(2));
+    a.nextAttemptAt = Date.now() + 60_000;
+    b.nextAttemptAt = Date.now() + 120_000;
+    await queue.update(a);
+    await queue.update(b);
+    expect((await queue.due(Date.now(), 10)).length).toBe(0);
+
+    await queue.releaseBackoffs();
+
+    expect((await queue.due(Date.now(), 10)).map((i) => i.id).sort()).toEqual(
+      [a.id, b.id].sort(),
+    );
+  });
 });

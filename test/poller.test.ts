@@ -61,13 +61,15 @@ describe('pending poll serialization', () => {
 
     const polling = pollDue(cfg);
     await vi.waitFor(() => expect(getStatus).toHaveBeenCalledOnce());
-    const tracking = trackPage('local-2', 'page-2');
+    // trackPage must complete while the status request is still in flight —
+    // the pending lock is not held across network calls.
+    await trackPage('local-2', 'page-2');
     resolveStatus({
       page_id: 'page-1',
       status: 'indexing',
       last_error: null,
     });
-    await Promise.all([polling, tracking]);
+    await polling;
 
     expect(storage.pending).toEqual([
       expect.objectContaining({ localId: 'local-1', pollCount: 1 }),

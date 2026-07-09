@@ -33,6 +33,7 @@ function Options() {
   const [blacklist, setBlacklist] = useState<BlacklistEntry[]>([]);
   const [newRule, setNewRule] = useState<UserSkipRule>({ pattern: '', kind: 'domain' });
   const [forgetInput, setForgetInput] = useState('');
+  const [cooldownInput, setCooldownInput] = useState<string | null>(null);
 
   useEffect(() => {
     getSettings().then(setS);
@@ -161,14 +162,21 @@ function Options() {
           <input
             type="number"
             min={1}
-            value={cooldownHours}
+            value={cooldownInput ?? String(cooldownHours)}
             onInput={(e) => {
-              const hours = Number((e.target as HTMLInputElement).value);
-              const cooldownMs = hours * 3600000;
-              if (!Number.isFinite(hours) || hours < 1 || !Number.isFinite(cooldownMs)) return;
-              patch({ cooldownMs });
+              // Track the raw text so the field can be cleared while retyping;
+              // only valid values reach settings.
+              const raw = (e.target as HTMLInputElement).value;
+              setCooldownInput(raw);
+              const hours = Number(raw);
+              if (Number.isFinite(hours) && hours >= 1) patch({ cooldownMs: hours * 3600000 });
             }}
+            onBlur={() => setCooldownInput(null)}
           />
+          {cooldownInput !== null &&
+            (!Number.isFinite(Number(cooldownInput)) || Number(cooldownInput) < 1) && (
+              <span class="err-text small">Enter a whole number of hours, 1 or more.</span>
+            )}
         </label>
         <label class="inline">
           <input

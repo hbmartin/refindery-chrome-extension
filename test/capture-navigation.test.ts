@@ -41,5 +41,14 @@ describe('capture navigation messages', () => {
     locationChange();
     await vi.advanceTimersByTimeAsync(700);
     expect(sendMessage).toHaveBeenCalledTimes(4);
+
+    // Rapid A→B→A hops inside one debounce window still capture the final
+    // route, even though that URL was attempted before.
+    history.pushState({}, '', '/');
+    locationChange();
+    history.pushState({}, '', '/next-article');
+    locationChange();
+    await vi.advanceTimersByTimeAsync(700);
+    expect(sendMessage).toHaveBeenCalledTimes(6);
   });
 });

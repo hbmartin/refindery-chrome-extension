@@ -209,6 +209,8 @@ const server = http.createServer(async (req, res) => {
     const page = findPageById(pageMatch[1]);
     if (!page) return send(res, 404, { detail: 'unknown page' });
     const status = statusOf(page);
+    // Mock-only shortcut: lazily backfill indexed_at on first read since this
+    // server has no real indexing pipeline that would stamp it.
     if (status === 'indexed' && page.indexed_at == null) page.indexed_at = now();
     const {
       _contentHash,

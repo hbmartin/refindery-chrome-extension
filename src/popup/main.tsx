@@ -46,6 +46,7 @@ function Popup() {
   const [confirmForget, setConfirmForget] = useState(false);
   const [busy, setBusy] = useState(false);
   const [messageError, setMessageError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -86,22 +87,28 @@ function Popup() {
     if (!tabDomain) return;
     setBusy(true);
     try {
-      const res = await send<{ ok: boolean; result?: { pages_purged?: number } }>({
+      const reply = await send<
+        { ok: true; result?: { pages_purged?: number } } | MessageFailure
+      >({
         type: 'forgetDomain',
         domain: tabDomain,
         reason: 'user requested from popup',
       });
+      const res = unwrapMessage(reply);
       setConfirmForget(false);
-      if (res.ok) {
-        alert(
-          `Forgot ${tabDomain}: purged ${res.result?.pages_purged ?? 0} page(s). This domain is now blacklisted.`,
-        );
-        await refresh();
-      } else {
-        setMessageError('Forget failed — check the server connection in Options.');
-      }
-    } catch {
-      setMessageError('Forget failed because the background worker is unavailable.');
+      setMessageError(null);
+      setNotice(
+        `Forgot ${tabDomain}: purged ${res.result?.pages_purged ?? 0} page(s). This domain is now blacklisted.`,
+      );
+      await refresh();
+    } catch (err) {
+      setConfirmForget(false);
+      setNotice(null);
+      setMessageError(
+        err instanceof Error
+          ? err.message
+          : 'Forget failed — check the server connection in Options.',
+      );
     } finally {
       setBusy(false);
     }
@@ -112,8 +119,8 @@ function Popup() {
       const reply = await send<{ ok: true } | MessageFailure>({ type: 'retryDead', localId });
       unwrapMessage(reply);
       await refresh();
-    } catch {
-      setMessageError('Could not retry this page.');
+    } catch (err) {
+      setMessageError(err instanceof Error ? err.message : 'Could not retry this page.');
     }
   };
 
@@ -155,6 +162,7 @@ function Popup() {
       </div>
 
       {messageError && <div class="card small err-text mb" role="alert">{messageError}</div>}
+      {notice && <div class="card small ok-text mb" role="status">{notice}</div>}
 
       <div class="card small">
         <div class={statusDot === 'ok' ? 'ok-text' : statusDot === 'err' ? 'err-text' : ''}>
