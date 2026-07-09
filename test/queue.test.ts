@@ -103,6 +103,7 @@ describe('queue', () => {
     const transaction = vi.spyOn(IDBDatabase.prototype, 'transaction');
     await queue.releaseBackoffs();
     expect(transaction).toHaveBeenCalledTimes(1);
+    transaction.mockRestore();
 
     expect((await queue.due(Date.now(), 10)).map((i) => i.id).sort()).toEqual(
       [a.id, b.id].sort(),
