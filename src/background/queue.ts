@@ -93,6 +93,19 @@ export async function remove(id: string): Promise<void> {
   if (key !== undefined) await reqToPromise(s.delete(key));
 }
 
+/**
+ * Make every backed-off item immediately due. Used when the user changes
+ * server settings so a fixed token/URL doesn't wait out stale retry delays.
+ */
+export async function releaseBackoffs(): Promise<void> {
+  const now = Date.now();
+  const items = (await all()).filter((i) => i.nextAttemptAt > now);
+  for (const item of items) {
+    item.nextAttemptAt = now;
+    await update(item);
+  }
+}
+
 export async function clear(): Promise<void> {
   const db = await openDb();
   await reqToPromise(store(db, 'readwrite').clear());
@@ -101,23 +114,31 @@ export async function clear(): Promise<void> {
 /** Drop oldest items beyond the cap. Returns number dropped. */
 export async function enforceCap(): Promise<number> {
   const db = await openDb();
-  const tx = db.transaction(STORE, 'readwrite');
-  const s = tx.objectStore(STORE);
-  const total = await reqToPromise(s.count());
-  const overflow = total - MAX_QUEUE_ITEMS;
-  if (overflow <= 0) return 0;
-  // Iterate ascending primary key, deleting the oldest `overflow` records.
-  await new Promise<void>((resolve, reject) => {
+  return new Promise<number>((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    const s = tx.objectStore(STORE);
     let dropped = 0;
-    const cursorReq = s.openCursor();
-    cursorReq.onsuccess = () => {
-      const cursor = cursorReq.result;
-      if (!cursor || dropped >= overflow) return resolve();
-      cursor.delete();
-      dropped++;
-      cursor.continue();
+    const countReq = s.count();
+
+    countReq.onsuccess = () => {
+      const overflow = countReq.result - MAX_QUEUE_ITEMS;
+      if (overflow <= 0) return;
+
+      // Schedule the next request while the count success event keeps the
+      // transaction active, then delete oldest records within that same
+      // serialized write transaction.
+      const cursorReq = s.openCursor();
+      cursorReq.onsuccess = () => {
+        const cursor = cursorReq.result;
+        if (!cursor || dropped >= overflow) return;
+        cursor.delete();
+        dropped++;
+        cursor.continue();
+      };
     };
-    cursorReq.onerror = () => reject(cursorReq.error);
+
+    tx.oncomplete = () => resolve(dropped);
+    tx.onerror = () => reject(tx.error ?? new Error('Queue cap transaction failed'));
+    tx.onabort = () => reject(tx.error ?? new Error('Queue cap transaction aborted'));
   });
-  return overflow;
 }

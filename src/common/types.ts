@@ -24,12 +24,15 @@ export interface ForgetRequest {
 
 // ── Refindery API: responses ─────────────────────────────────────────────
 
-export type PageStatus =
-  | 'queued'
-  | 'indexing'
-  | 'indexed'
-  | 'failed'
-  | 'dead';
+export const PAGE_STATUSES = [
+  'queued',
+  'indexing',
+  'indexed',
+  'failed',
+  'dead',
+] as const;
+
+export type PageStatus = (typeof PAGE_STATUSES)[number];
 
 /** Terminal states — no further polling needed. */
 export const TERMINAL_STATUSES: ReadonlySet<PageStatus> = new Set([

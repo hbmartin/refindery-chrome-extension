@@ -19,6 +19,7 @@ vi.mock('@/background/queue', () => ({
   count: vi.fn(),
   due: vi.fn(),
   enqueue: vi.fn(),
+  releaseBackoffs: vi.fn(),
   remove: vi.fn(),
   update: vi.fn(),
 }));
@@ -210,15 +211,21 @@ describe('drainQueue', () => {
     );
   });
 
-  it('backs off unauthorized items and stops the drain', async () => {
-    const queued = item();
-    vi.mocked(queue.due).mockResolvedValueOnce([queued]);
+  it('backs off the whole remaining batch on unauthorized and stops the drain', async () => {
+    const first = item();
+    const second = item({ id: 'local-2' });
+    vi.mocked(queue.due).mockResolvedValueOnce([first, second]);
     vi.mocked(postPage).mockResolvedValueOnce({ kind: 'unauthorized' });
 
     expect(await drainQueue()).toBe(false);
-    expect(queued.attempts).toBe(1);
-    expect(queued.nextAttemptAt).toBeGreaterThan(Date.now());
-    expect(queue.update).toHaveBeenCalledWith(queued);
+    // Only one request went out with the bad token; the untried item was
+    // backed off too instead of burning a request on the next tick.
+    expect(postPage).toHaveBeenCalledOnce();
+    for (const queued of [first, second]) {
+      expect(queued.attempts).toBe(1);
+      expect(queued.nextAttemptAt).toBeGreaterThan(Date.now());
+      expect(queue.update).toHaveBeenCalledWith(queued);
+    }
     expect(storage.authError).toBe(true);
   });
 
@@ -296,6 +303,13 @@ describe('tick and message orchestration', () => {
         error: 'database unavailable',
       });
     });
+  });
+
+  it('releases queue backoffs when settings change', async () => {
+    await expect(handleMessage({ type: 'settingsChanged' }, {})).resolves.toEqual({
+      ok: true,
+    });
+    expect(queue.releaseBackoffs).toHaveBeenCalledOnce();
   });
 
   it('clears stale errors when retrying a dead page', async () => {

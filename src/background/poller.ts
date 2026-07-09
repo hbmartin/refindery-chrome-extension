@@ -62,42 +62,49 @@ export async function trackPage(localId: string, pageId: string): Promise<void> 
  * pending records remain (so the caller keeps a poll timer alive).
  */
 export async function pollDue(cfg: ServerConfig): Promise<boolean> {
-  return withPendingLock(async () => {
-    let list = await getPending();
+  const due = await withPendingLock(async () => {
+    const list = await getPending();
     const now = Date.now();
-    const due = list.filter((p) => p.nextPollAt <= now).slice(0, MAX_CONCURRENT_POLLS);
+    return list.filter((p) => p.nextPollAt <= now).slice(0, MAX_CONCURRENT_POLLS);
+  });
 
-    await Promise.all(
-      due.map(async (p) => {
-        const status = await getStatus(cfg, p.pageId);
-        if (!status) {
-          // transient failure — back off and retry later
-          p.pollCount += 1;
-          p.nextPollAt = Date.now() + pollBackoffMs(p.pollCount);
-          return;
+  // Status requests run outside the lock so trackPage() callers (e.g. the
+  // retryDead message handler) aren't blocked behind slow network calls.
+  await Promise.all(
+    due.map(async (p) => {
+      const status = await getStatus(cfg, p.pageId);
+      if (!status) {
+        // transient failure — back off and retry later
+        p.pollCount += 1;
+        p.nextPollAt = Date.now() + pollBackoffMs(p.pollCount);
+        return;
+      }
+      if (TERMINAL_STATUSES.has(status.status)) {
+        await upsertRecent({
+          localId: p.localId,
+          state: status.status === 'indexed' ? 'indexed' : 'dead',
+          lastError: status.last_error,
+        });
+        if (status.status === 'dead') {
+          const entry = (await getRecent()).find((e) => e.localId === p.localId);
+          await notifyDead(entry?.url ?? p.pageId, status.last_error);
         }
-        if (TERMINAL_STATUSES.has(status.status)) {
-          await upsertRecent({
-            localId: p.localId,
-            state: status.status === 'indexed' ? 'indexed' : 'dead',
-            lastError: status.last_error,
-          });
-          if (status.status === 'dead') {
-            const entry = (await getRecent()).find((e) => e.localId === p.localId);
-            await notifyDead(entry?.url ?? p.pageId, status.last_error);
-          }
-          p.pollCount = -1; // mark for removal
-        } else {
-          await upsertRecent({ localId: p.localId, state: 'indexing', lastError: null });
-          p.pollCount += 1;
-          p.nextPollAt = Date.now() + pollBackoffMs(p.pollCount);
-        }
-      }),
-    );
+        p.pollCount = -1; // mark for removal
+      } else {
+        await upsertRecent({ localId: p.localId, state: 'indexing', lastError: null });
+        p.pollCount += 1;
+        p.nextPollAt = Date.now() + pollBackoffMs(p.pollCount);
+      }
+    }),
+  );
 
-    list = list.filter((p) => p.pollCount !== -1);
-    await setPending(list);
-    return list.length > 0;
+  return withPendingLock(async () => {
+    // Re-read and merge so pages tracked while requests were in flight survive.
+    const merged = (await getPending())
+      .map((existing) => due.find((d) => d.localId === existing.localId) ?? existing)
+      .filter((p) => p.pollCount !== -1);
+    await setPending(merged);
+    return merged.length > 0;
   });
 }
 

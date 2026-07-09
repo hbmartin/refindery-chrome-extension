@@ -116,6 +116,9 @@ window.addEventListener('message', (e) => {
     const currentHref = location.href;
     if (currentHref === lastObservedHref) return;
     lastObservedHref = currentHref;
+    // A genuine URL change resets the attempt dedupe so rapid A→B→A hops
+    // within the debounce window can still capture the final route.
+    lastAttemptedHref = '';
     scheduleCapture('spa');
   }
 });

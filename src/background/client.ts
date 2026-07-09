@@ -3,6 +3,7 @@
 // and stateless.
 
 import { endpoint } from '@/common/settings';
+import { PAGE_STATUSES } from '@/common/types';
 import type {
   BlacklistResponse,
   ForgetRequest,
@@ -212,7 +213,7 @@ function isRevisitResponse(
     isRecord(value) &&
     typeof value.page_id === 'string' &&
     typeof value.status === 'string' &&
-    ['queued', 'indexing', 'indexed', 'failed', 'dead'].includes(value.status) &&
+    (PAGE_STATUSES as readonly string[]).includes(value.status) &&
     value.revisit === true &&
     typeof value.content_hash_differs === 'boolean'
   );
