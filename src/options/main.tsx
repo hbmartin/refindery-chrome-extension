@@ -162,9 +162,12 @@ function Options() {
             type="number"
             min={1}
             value={cooldownHours}
-            onInput={(e) =>
-              patch({ cooldownMs: Number((e.target as HTMLInputElement).value) * 3600000 })
-            }
+            onInput={(e) => {
+              const hours = Number((e.target as HTMLInputElement).value);
+              const cooldownMs = hours * 3600000;
+              if (!Number.isFinite(hours) || hours < 1 || !Number.isFinite(cooldownMs)) return;
+              patch({ cooldownMs });
+            }}
           />
         </label>
         <label class="inline">

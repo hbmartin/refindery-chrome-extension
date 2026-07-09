@@ -98,6 +98,10 @@ function statusOf(page) {
   return 'indexed';
 }
 
+function findPageById(pageId) {
+  return [...pages.values()].find((page) => page.page_id === pageId);
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const path = url.pathname;
@@ -188,7 +192,7 @@ const server = http.createServer(async (req, res) => {
   // GET /v1/pages/:id/status
   const statusMatch = path.match(/^\/v1\/pages\/([^/]+)\/status$/);
   if (statusMatch && method === 'GET') {
-    const page = [...pages.values()].find((p) => p.page_id === statusMatch[1]);
+    const page = findPageById(statusMatch[1]);
     if (!page) return send(res, 404, { detail: 'unknown page' });
     const st = statusOf(page);
     return send(res, 200, {
@@ -197,6 +201,24 @@ const server = http.createServer(async (req, res) => {
       last_error: st === 'dead' ? page._lastError : null,
       features: { entities: { status: st === 'indexed' ? 'done' : 'not_queued', last_error: null } },
     });
+  }
+
+  // GET /v1/pages/:id
+  const pageMatch = path.match(/^\/v1\/pages\/([^/]+)$/);
+  if (pageMatch && method === 'GET') {
+    const page = findPageById(pageMatch[1]);
+    if (!page) return send(res, 404, { detail: 'unknown page' });
+    const status = statusOf(page);
+    if (status === 'indexed' && page.indexed_at == null) page.indexed_at = now();
+    const {
+      _contentHash,
+      _createdMs,
+      _willDie,
+      _status,
+      _lastError,
+      ...pageOut
+    } = page;
+    return send(res, 200, { ...pageOut, status });
   }
 
   // POST /v1/forget
@@ -244,8 +266,13 @@ const server = http.createServer(async (req, res) => {
   // GET /v1/jobs
   if (path === '/v1/jobs' && method === 'GET') {
     const filter = url.searchParams.get('status_filter');
+    const requestedLimit = url.searchParams.get('limit');
     let list = [...jobs.values()];
     if (filter) list = list.filter((j) => j.status === filter);
+    if (requestedLimit !== null) {
+      const limit = Number.parseInt(requestedLimit, 10);
+      if (Number.isFinite(limit) && limit >= 0) list = list.slice(0, limit);
+    }
     return send(res, 200, { jobs: list.map(({ _canon, ...j }) => j) });
   }
 

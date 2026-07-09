@@ -1,0 +1,37 @@
+rules:
+  - id: refindery-background-fetch-requires-timeout-wrapper
+    message: Route upstream fetches through fetchWithTimeout so service-worker work cannot hang indefinitely.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include:
+        - /src/background/client.ts
+    patterns:
+      - pattern: fetch(...)
+      - pattern-not-inside: |
+          async function fetchWithTimeout(...) {
+            ...
+          }
+
+  - id: refindery-ingest-success-json-must-be-validated
+    message: Do not parse postPage success bodies directly; use safeJson and a response type guard.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include:
+        - /src/background/client.ts
+    patterns:
+      - pattern: await $RESPONSE.json()
+      - pattern-inside: |
+          export async function postPage(...) {
+            ...
+          }
+
+  - id: refindery-runtime-message-promise-needs-rejection-handler
+    message: Async runtime message handlers must send a response on both fulfillment and rejection.
+    severity: ERROR
+    languages: [typescript]
+    paths:
+      include:
+        - /src/background/index.ts
+    pattern: $PROMISE.then(sendResponse)

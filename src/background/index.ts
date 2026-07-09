@@ -23,6 +23,7 @@ import * as queue from './queue';
 import { pollDue, pendingCount, trackPage, retryDeadPage } from './poller';
 import { getRecent, upsertRecent, updateBadge } from './recent';
 import { notifyServerDown } from './notify';
+import { revisitDisposition } from './revisit';
 
 const MAINTENANCE_ALARM = 'maintenance';
 const DRAIN_BATCH = 10;
@@ -139,15 +140,19 @@ async function serverConfig(): Promise<ServerConfig | null> {
 
 // ── Queue drain ────────────────────────────────────────────────────────────
 
-async function drainQueue(): Promise<void> {
+export async function drainQueue(): Promise<boolean> {
   const cfg = await serverConfig();
-  if (!cfg) return; // not configured yet
-  if (!(await isReady(cfg.baseUrl))) {
-    if ((await queue.count()) > 0) await notifyServerDown();
-    return;
-  }
+  if (!cfg) return false; // not configured yet
 
   const items = await queue.due(Date.now(), DRAIN_BATCH);
+  // Avoid waking the server just to inspect queue items that are still backed off.
+  if (items.length === 0) return true;
+
+  if (!(await isReady(cfg.baseUrl))) {
+    await notifyServerDown();
+    return false;
+  }
+
   for (const item of items) {
     const outcome = await postPage(cfg, buildRequest(item));
     const p = item.payload;
@@ -172,15 +177,19 @@ async function drainQueue(): Promise<void> {
       case 'revisit': {
         await setAuthError(false);
         if (p.canonicalKey) await markSentForItem(p.canonicalKey);
+        const disposition = revisitDisposition(outcome.body.status);
         await upsertRecent({
           localId: item.id,
           url: p.url,
           domain,
           title: p.title,
-          state: 'revisit',
+          // Keep the successful revisit label, but surface dead immediately and
+          // show the actual progress state for nonterminal existing pages.
+          state: disposition.state,
           pageId: outcome.body.page_id,
           contentChanged: outcome.body.content_hash_differs,
         });
+        if (disposition.shouldTrack) await trackPage(item.id, outcome.body.page_id);
         await queue.remove(item.id);
         break;
       }
@@ -230,7 +239,10 @@ async function drainQueue(): Promise<void> {
       }
       case 'unauthorized': {
         await setAuthError(true);
-        return; // stop the whole drain; token is bad
+        item.attempts += 1;
+        item.nextAttemptAt = Date.now() + sendBackoffMs(item.attempts);
+        await queue.update(item);
+        return false; // stop the whole drain; token is bad
       }
       case 'network_error':
       case 'server_error': {
@@ -241,6 +253,7 @@ async function drainQueue(): Promise<void> {
       }
     }
   }
+  return true;
 }
 
 async function markSentForItem(key: string): Promise<void> {
@@ -251,37 +264,50 @@ async function markSentForItem(key: string): Promise<void> {
 // ── Tick: drain + poll + badge, self-chaining while work remains ──────────
 
 let ticking = false;
-async function tick(): Promise<void> {
+export async function tick(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
-    await drainQueue();
+    const ready = await drainQueue();
     const cfg = await serverConfig();
     let morePolls = false;
-    if (cfg) morePolls = await pollDue(cfg);
+    if (cfg && ready) morePolls = await pollDue(cfg);
 
     const qCount = await queue.count();
     await updateBadge({ queueCount: qCount, error: await hasAuthError() });
 
-    if (qCount > 0 || morePolls) {
+    if (ready && (qCount > 0 || morePolls)) {
       // keep making progress faster than the 1-min maintenance alarm
-      setTimeout(() => void tick(), 3000);
+      setTimeout(scheduleTick, 3000);
     }
   } finally {
     ticking = false;
   }
 }
 
+function scheduleTick(): void {
+  void tick().catch((error: unknown) => {
+    console.error('Refindery background tick failed', error);
+  });
+}
+
 // ── Message routing ────────────────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener(
-  (msg: RuntimeMessage, sender, sendResponse) => {
-    handleMessage(msg, sender).then(sendResponse);
-    return true; // async
-  },
-);
+export function registerMessageListener(): void {
+  chrome.runtime.onMessage.addListener(
+    (msg: RuntimeMessage, sender, sendResponse) => {
+      void handleMessage(msg, sender).then(sendResponse, (error: unknown) => {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return true; // async
+    },
+  );
+}
 
-async function handleMessage(
+export async function handleMessage(
   msg: RuntimeMessage,
   sender: chrome.runtime.MessageSender,
 ): Promise<unknown> {
@@ -299,7 +325,7 @@ async function handleMessage(
         title: msg.payload.title,
         state: 'queued',
       });
-      void tick();
+      scheduleTick();
       return { ok: true };
     }
     case 'getState': {
@@ -374,9 +400,9 @@ async function handleMessage(
       if (!entry?.pageId) return { ok: false, error: 'no page id' };
       const ok = await retryDeadPage(cfg, entry.pageId);
       if (ok) {
-        await upsertRecent({ localId: msg.localId, state: 'queued' });
+        await upsertRecent({ localId: msg.localId, state: 'queued', lastError: null });
         await trackPage(msg.localId, entry.pageId);
-        void tick();
+        scheduleTick();
       }
       return { ok };
     }
@@ -395,7 +421,7 @@ async function handleMessage(
       return { ready, authOk };
     }
     case 'settingsChanged': {
-      void tick();
+      scheduleTick();
       return { ok: true };
     }
   }
@@ -403,19 +429,25 @@ async function handleMessage(
 
 // ── Lifecycle wiring ────────────────────────────────────────────────────────
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
-  void tick();
-});
+export function registerLifecycleListeners(): void {
+  chrome.runtime.onInstalled.addListener(() => {
+    chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+    scheduleTick();
+  });
 
-chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
-  void tick();
-});
+  chrome.runtime.onStartup.addListener(() => {
+    chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+    scheduleTick();
+  });
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === MAINTENANCE_ALARM) void tick();
-});
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === MAINTENANCE_ALARM) scheduleTick();
+  });
+}
 
-// Kick once when the worker spins up (e.g. after being suspended).
-void tick();
+if (import.meta.env.MODE !== 'test') {
+  registerMessageListener();
+  registerLifecycleListeners();
+  // Kick once when the worker spins up (e.g. after being suspended).
+  scheduleTick();
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { postPage } from '@/background/client';
+import { postPage, REQUEST_TIMEOUT_MS } from '@/background/client';
 import type { IngestPageRequest } from '@/common/types';
 
 const cfg = { baseUrl: 'http://127.0.0.1:8000', token: 't' };
@@ -14,7 +14,10 @@ function fakeRes(status: number, json?: any, text = ''): Response {
   } as unknown as Response;
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 describe('postPage outcome mapping', () => {
   it('202 → accepted', async () => {
@@ -66,5 +69,36 @@ describe('postPage outcome mapping', () => {
     const out = await postPage(cfg, req);
     expect(out.kind).toBe('network_error');
     if (out.kind === 'network_error') expect(out.message).toContain('ECONNREFUSED');
+  });
+
+  it.each([
+    [202, {}],
+    [200, { page_id: 'pg_1', status: 'indexed' }],
+    [403, { error: 'blacklisted' }],
+  ])('maps malformed %s bodies to server_error', async (status, body) => {
+    vi.stubGlobal('fetch', vi.fn(async () => fakeRes(status, body)));
+    const out = await postPage(cfg, req);
+    expect(out).toMatchObject({
+      kind: 'server_error',
+      httpStatus: status,
+      message: 'malformed upstream response body',
+    });
+  });
+
+  it('aborts a stalled ingest request at the shared timeout', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+      ),
+    );
+
+    const outcome = postPage(cfg, req);
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+
+    expect(await outcome).toMatchObject({ kind: 'network_error', message: 'aborted' });
   });
 });

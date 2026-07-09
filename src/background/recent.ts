@@ -6,35 +6,47 @@ import { MAX_RECENT_ENTRIES } from '@/common/settings';
 
 const RECENT_KEY = 'recent';
 
+// chrome.storage.local has no atomic read-modify-write primitive. Serialize all
+// recent-entry writes in this worker so concurrent capture/poll callbacks cannot
+// overwrite one another with stale snapshots.
+let recentWrite = Promise.resolve();
+
 export async function getRecent(): Promise<RecentEntry[]> {
   const raw = await chrome.storage.local.get(RECENT_KEY);
   return (raw[RECENT_KEY] as RecentEntry[]) ?? [];
 }
 
-export async function upsertRecent(
+export function upsertRecent(
   entry: Partial<RecentEntry> & Pick<RecentEntry, 'localId'>,
 ): Promise<void> {
-  const list = await getRecent();
-  const idx = list.findIndex((e) => e.localId === entry.localId);
-  const now = Date.now();
-  if (idx >= 0) {
-    list[idx] = { ...list[idx], ...entry, updatedAt: now };
-  } else {
-    list.unshift({
-      localId: entry.localId,
-      url: entry.url ?? '',
-      domain: entry.domain ?? '',
-      title: entry.title ?? null,
-      state: entry.state ?? 'queued',
-      pageId: entry.pageId ?? null,
-      contentChanged: entry.contentChanged,
-      lastError: entry.lastError ?? null,
-      updatedAt: now,
-    });
-  }
-  // newest first, capped
-  list.sort((a, b) => b.updatedAt - a.updatedAt);
-  await chrome.storage.local.set({ [RECENT_KEY]: list.slice(0, MAX_RECENT_ENTRIES) });
+  const write = recentWrite.then(async () => {
+    const list = await getRecent();
+    const idx = list.findIndex((e) => e.localId === entry.localId);
+    const now = Date.now();
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...entry, updatedAt: now };
+    } else {
+      list.unshift({
+        localId: entry.localId,
+        url: entry.url ?? '',
+        domain: entry.domain ?? '',
+        title: entry.title ?? null,
+        state: entry.state ?? 'queued',
+        pageId: entry.pageId ?? null,
+        contentChanged: entry.contentChanged,
+        lastError: entry.lastError ?? null,
+        updatedAt: now,
+      });
+    }
+    // newest first, capped
+    list.sort((a, b) => b.updatedAt - a.updatedAt);
+    await chrome.storage.local.set({ [RECENT_KEY]: list.slice(0, MAX_RECENT_ENTRIES) });
+  });
+
+  // Keep the chain usable after a failed storage operation while still
+  // returning the original rejection to the caller.
+  recentWrite = write.catch(() => undefined);
+  return write;
 }
 
 export async function findByPageId(

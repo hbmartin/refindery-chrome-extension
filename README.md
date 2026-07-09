@@ -51,10 +51,14 @@ clustering are consumer features and are out of scope here.
 ```bash
 npm run dev        # Vite + HMR (load dist/ unpacked, reloads on change)
 npm test           # Vitest unit tests
+npm run lint:architecture # enforce background/UI dependency boundaries
+npm run lint:semgrep      # check timeout, parsing, and messaging guardrails
 npm run mock       # start the in-memory mock Refindery server (port 8000)
 npm run build      # typecheck + production build
 npm run zip        # package dist/ → refindery-extension.zip
 ```
+
+`npm run lint:semgrep` expects the Semgrep CLI to be available on `PATH`.
 
 ### Manual E2E against the mock server
 

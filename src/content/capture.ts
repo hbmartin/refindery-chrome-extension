@@ -10,6 +10,9 @@ const MIN_TEXT_CHARS = 200; // skip near-empty HTML pages
 const DEBOUNCE_MS = 700;
 
 let lastAttemptedHref = '';
+// MAIN-world messages are forgeable by the page. Only treat one as navigation
+// when the isolated world can observe that the browser URL actually changed.
+let lastObservedHref = location.href;
 let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 function faviconUrl(): string | null {
@@ -110,7 +113,9 @@ function scheduleCapture(trigger: CaptureTrigger): void {
 // SPA navigations relayed from the MAIN-world hook.
 window.addEventListener('message', (e) => {
   if (e.source === window && e.data?.source === 'refindery' && e.data.kind === 'locationchange') {
-    lastAttemptedHref = ''; // allow a new capture for the new route
+    const currentHref = location.href;
+    if (currentHref === lastObservedHref) return;
+    lastObservedHref = currentHref;
     scheduleCapture('spa');
   }
 });
