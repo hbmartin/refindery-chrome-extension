@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as queue from '@/background/queue';
 import { MAX_QUEUE_ITEMS } from '@/common/settings';
 import type { CapturePayload } from '@/common/types';
@@ -100,7 +100,9 @@ describe('queue', () => {
     await queue.update(b);
     expect((await queue.due(Date.now(), 10)).length).toBe(0);
 
+    const transaction = vi.spyOn(IDBDatabase.prototype, 'transaction');
     await queue.releaseBackoffs();
+    expect(transaction).toHaveBeenCalledTimes(1);
 
     expect((await queue.due(Date.now(), 10)).map((i) => i.id).sort()).toEqual(
       [a.id, b.id].sort(),

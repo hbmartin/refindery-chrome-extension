@@ -162,6 +162,7 @@ function Options() {
           <input
             type="number"
             min={1}
+            step={1}
             value={cooldownInput ?? String(cooldownHours)}
             onInput={(e) => {
               // Track the raw text so the field can be cleared while retyping;
@@ -169,12 +170,12 @@ function Options() {
               const raw = (e.target as HTMLInputElement).value;
               setCooldownInput(raw);
               const hours = Number(raw);
-              if (Number.isFinite(hours) && hours >= 1) patch({ cooldownMs: hours * 3600000 });
+              if (Number.isInteger(hours) && hours >= 1) patch({ cooldownMs: hours * 3600000 });
             }}
             onBlur={() => setCooldownInput(null)}
           />
           {cooldownInput !== null &&
-            (!Number.isFinite(Number(cooldownInput)) || Number(cooldownInput) < 1) && (
+            (!Number.isInteger(Number(cooldownInput)) || Number(cooldownInput) < 1) && (
               <span class="err-text small">Enter a whole number of hours, 1 or more.</span>
             )}
         </label>

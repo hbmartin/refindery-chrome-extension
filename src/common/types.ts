@@ -1,5 +1,4 @@
-// Types mirroring the Refindery upstream ingest/lifecycle API
-// (see apis_for_upstream.md) plus internal extension types.
+// Types for the Refindery upstream ingest/lifecycle API plus internal extension types.
 
 // ── Refindery API: requests ──────────────────────────────────────────────
 

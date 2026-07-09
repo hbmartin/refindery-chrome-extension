@@ -268,28 +268,43 @@ async function markSentForItem(key: string): Promise<void> {
 // ── Tick: drain + poll + badge, self-chaining while work remains ──────────
 
 let ticking = false;
+let tickRequested = false;
+let releaseBackoffsRequested = false;
+
 export async function tick(): Promise<void> {
   if (ticking) return;
   ticking = true;
   try {
-    const ready = await drainQueue();
-    const cfg = await serverConfig();
-    let morePolls = false;
-    if (cfg && ready) morePolls = await pollDue(cfg);
+    do {
+      tickRequested = false;
+      if (releaseBackoffsRequested) {
+        releaseBackoffsRequested = false;
+        await queue.releaseBackoffs();
+      }
 
-    const qCount = await queue.count();
-    await updateBadge({ queueCount: qCount, error: await hasAuthError() });
+      const ready = await drainQueue();
+      const cfg = await serverConfig();
+      let morePolls = false;
+      if (cfg && ready) morePolls = await pollDue(cfg);
 
-    if (ready && (qCount > 0 || morePolls)) {
-      // keep making progress faster than the 1-min maintenance alarm
-      setTimeout(scheduleTick, 3000);
-    }
+      const qCount = await queue.count();
+      await updateBadge({ queueCount: qCount, error: await hasAuthError() });
+
+      if (ready && (qCount > 0 || morePolls)) {
+        // keep making progress faster than the 1-min maintenance alarm
+        setTimeout(scheduleTick, 3000);
+      }
+    } while (tickRequested);
   } finally {
     ticking = false;
   }
 }
 
 function scheduleTick(): void {
+  if (ticking) {
+    tickRequested = true;
+    return;
+  }
   void tick().catch((error: unknown) => {
     console.error('Refindery background tick failed', error);
   });
@@ -427,7 +442,9 @@ export async function handleMessage(
     case 'settingsChanged': {
       // A fixed token or server URL should take effect immediately rather than
       // waiting out retry backoffs accrued while the old settings were broken.
-      await queue.releaseBackoffs();
+      // Defer the release to the next tick pass so an in-flight request using
+      // the old settings cannot write a fresh backoff after we clear them.
+      releaseBackoffsRequested = true;
       scheduleTick();
       return { ok: true };
     }
