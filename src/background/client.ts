@@ -19,6 +19,8 @@ export interface ServerConfig {
   token: string;
 }
 
+export const REQUEST_TIMEOUT_MS = 15_000;
+
 function authHeaders(token: string): HeadersInit {
   return {
     Authorization: `Bearer ${token}`,
@@ -26,10 +28,23 @@ function authHeaders(token: string): HeadersInit {
   };
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** GET /readyz — unauthenticated. Returns true when 200 ready. */
 export async function isReady(baseUrl: string): Promise<boolean> {
   try {
-    const res = await fetch(endpoint(baseUrl, '/readyz'), {
+    const res = await fetchWithTimeout(endpoint(baseUrl, '/readyz'), {
       method: 'GET',
     });
     return res.status === 200;
@@ -45,7 +60,7 @@ export async function postPage(
 ): Promise<IngestOutcome> {
   let res: Response;
   try {
-    res = await fetch(endpoint(cfg.baseUrl, '/v1/pages'), {
+    res = await fetchWithTimeout(endpoint(cfg.baseUrl, '/v1/pages'), {
       method: 'POST',
       headers: authHeaders(cfg.token),
       body: JSON.stringify(req),
@@ -55,20 +70,32 @@ export async function postPage(
   }
 
   if (res.status === 202) {
-    return { kind: 'accepted', body: await res.json() };
+    const body = await safeJson(res);
+    return isAcceptedResponse(body)
+      ? { kind: 'accepted', body }
+      : malformedResponse(res.status);
   }
   if (res.status === 200) {
-    return { kind: 'revisit', body: await res.json() };
+    const body = await safeJson(res);
+    return isRevisitResponse(body)
+      ? { kind: 'revisit', body }
+      : malformedResponse(res.status);
   }
   if (res.status === 403) {
-    return { kind: 'blacklisted', body: await safeJson(res) };
+    const body = await safeJson(res);
+    return isBlacklistedResponse(body)
+      ? { kind: 'blacklisted', body }
+      : malformedResponse(res.status);
   }
   if (res.status === 401) {
     return { kind: 'unauthorized' };
   }
   if (res.status === 422) {
     const body = await safeJson(res);
-    return { kind: 'invalid', detail: body?.detail ?? 'unprocessable' };
+    return {
+      kind: 'invalid',
+      detail: isRecord(body) && typeof body.detail === 'string' ? body.detail : 'unprocessable',
+    };
   }
   if (res.status === 501) {
     return { kind: 'no_extraction' };
@@ -86,7 +113,7 @@ export async function getStatus(
   pageId: string,
 ): Promise<PageStatusResponse | null> {
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       endpoint(cfg.baseUrl, `/v1/pages/${encodeURIComponent(pageId)}/status`),
       { headers: authHeaders(cfg.token) },
     );
@@ -102,7 +129,7 @@ export async function forget(
   cfg: ServerConfig,
   req: ForgetRequest,
 ): Promise<ForgetResponse> {
-  const res = await fetch(endpoint(cfg.baseUrl, '/v1/forget'), {
+  const res = await fetchWithTimeout(endpoint(cfg.baseUrl, '/v1/forget'), {
     method: 'POST',
     headers: authHeaders(cfg.token),
     body: JSON.stringify(req),
@@ -117,7 +144,7 @@ export async function forget(
 export async function listBlacklist(
   cfg: ServerConfig,
 ): Promise<BlacklistResponse> {
-  const res = await fetch(endpoint(cfg.baseUrl, '/v1/blacklist'), {
+  const res = await fetchWithTimeout(endpoint(cfg.baseUrl, '/v1/blacklist'), {
     headers: authHeaders(cfg.token),
   });
   if (!res.ok) throw new Error(`blacklist list failed: ${res.status}`);
@@ -129,7 +156,7 @@ export async function deleteBlacklist(
   cfg: ServerConfig,
   id: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     endpoint(cfg.baseUrl, `/v1/blacklist/${encodeURIComponent(id)}`),
     { method: 'DELETE', headers: authHeaders(cfg.token) },
   );
@@ -147,7 +174,7 @@ export async function listJobs(
   if (opts.status) params.set('status_filter', opts.status);
   if (opts.limit) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     endpoint(cfg.baseUrl, `/v1/jobs${qs ? '?' + qs : ''}`),
     { headers: authHeaders(cfg.token) },
   );
@@ -160,7 +187,7 @@ export async function retryJob(
   cfg: ServerConfig,
   jobId: string,
 ): Promise<JobRow> {
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     endpoint(cfg.baseUrl, `/v1/jobs/${encodeURIComponent(jobId)}/retry`),
     { method: 'POST', headers: authHeaders(cfg.token) },
   );
@@ -168,7 +195,49 @@ export async function retryJob(
   return res.json();
 }
 
-async function safeJson(res: Response): Promise<any> {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isAcceptedResponse(
+  value: unknown,
+): value is Extract<IngestOutcome, { kind: 'accepted' }>['body'] {
+  return isRecord(value) && value.status === 'queued' && typeof value.page_id === 'string';
+}
+
+function isRevisitResponse(
+  value: unknown,
+): value is Extract<IngestOutcome, { kind: 'revisit' }>['body'] {
+  return (
+    isRecord(value) &&
+    typeof value.page_id === 'string' &&
+    typeof value.status === 'string' &&
+    ['queued', 'indexing', 'indexed', 'failed', 'dead'].includes(value.status) &&
+    value.revisit === true &&
+    typeof value.content_hash_differs === 'boolean'
+  );
+}
+
+function isBlacklistedResponse(
+  value: unknown,
+): value is Extract<IngestOutcome, { kind: 'blacklisted' }>['body'] {
+  return (
+    isRecord(value) &&
+    value.error === 'blacklisted' &&
+    typeof value.pattern === 'string' &&
+    value.pattern.length > 0
+  );
+}
+
+function malformedResponse(httpStatus: number): IngestOutcome {
+  return {
+    kind: 'server_error',
+    httpStatus,
+    message: 'malformed upstream response body',
+  };
+}
+
+async function safeJson(res: Response): Promise<unknown> {
   try {
     return await res.json();
   } catch {

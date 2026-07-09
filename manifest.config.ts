@@ -48,7 +48,7 @@ export default defineManifest({
       all_frames: false,
     },
   ],
-  permissions: ['storage', 'alarms', 'notifications', 'tabs', 'scripting'],
+  permissions: ['storage', 'alarms', 'notifications', 'tabs'],
   // Default server origin. Custom origins are requested at runtime via
   // optional_host_permissions when the user changes the base URL in Options.
   host_permissions: ['http://127.0.0.1/*', 'http://localhost/*'],

@@ -101,10 +101,11 @@ export async function clear(): Promise<void> {
 /** Drop oldest items beyond the cap. Returns number dropped. */
 export async function enforceCap(): Promise<number> {
   const db = await openDb();
-  const total = await reqToPromise(store(db, 'readonly').count());
+  const tx = db.transaction(STORE, 'readwrite');
+  const s = tx.objectStore(STORE);
+  const total = await reqToPromise(s.count());
   const overflow = total - MAX_QUEUE_ITEMS;
   if (overflow <= 0) return 0;
-  const s = store(db, 'readwrite');
   // Iterate ascending primary key, deleting the oldest `overflow` records.
   await new Promise<void>((resolve, reject) => {
     let dropped = 0;

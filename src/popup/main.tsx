@@ -14,6 +14,23 @@ interface State {
   authError: boolean;
 }
 
+interface MessageFailure {
+  ok: false;
+  error?: string;
+}
+
+function unwrapMessage<T>(reply: T | MessageFailure): T {
+  if (
+    typeof reply === 'object' &&
+    reply !== null &&
+    'ok' in reply &&
+    reply.ok === false
+  ) {
+    throw new Error(reply.error ?? 'Background request failed');
+  }
+  return reply as T;
+}
+
 function timeAgo(ms: number): string {
   const s = Math.floor((Date.now() - ms) / 1000);
   if (s < 60) return `${s}s ago`;
@@ -28,49 +45,76 @@ function Popup() {
   const [tabDomain, setTabDomain] = useState<string | null>(null);
   const [confirmForget, setConfirmForget] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    setState(await send({ type: 'getState' }));
+    try {
+      const next = await send<State | MessageFailure>({ type: 'getState' });
+      setState(unwrapMessage<State>(next));
+      setMessageError(null);
+    } catch {
+      setMessageError('The background worker is unavailable. Reopen the popup to retry.');
+    }
   }, []);
 
   useEffect(() => {
     void refresh();
-    void send({ type: 'testConnection' }).then(setConn);
-    chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-      if (tab?.url) setTabDomain(domainOf(tab.url));
-    });
+    void send<{ ready: boolean; authOk: boolean } | MessageFailure>({ type: 'testConnection' })
+      .then((reply) => setConn(unwrapMessage<{ ready: boolean; authOk: boolean }>(reply)))
+      .catch(() => setMessageError('Could not test the server connection.'));
+    void chrome.tabs
+      .query({ active: true, currentWindow: true })
+      .then(([tab]) => {
+        if (tab?.url) setTabDomain(domainOf(tab.url));
+      })
+      .catch(() => setMessageError('Could not read the active tab.'));
     const t = setInterval(refresh, 2000);
     return () => clearInterval(t);
   }, [refresh]);
 
   const togglePause = async (paused: boolean) => {
-    await send({ type: 'setPaused', paused });
-    await refresh();
+    try {
+      const reply = await send<{ ok: true } | MessageFailure>({ type: 'setPaused', paused });
+      unwrapMessage(reply);
+      await refresh();
+    } catch {
+      setMessageError('Could not update the capture setting.');
+    }
   };
 
   const doForget = async () => {
     if (!tabDomain) return;
     setBusy(true);
-    const res = await send<{ ok: boolean; result?: any }>({
-      type: 'forgetDomain',
-      domain: tabDomain,
-      reason: 'user requested from popup',
-    });
-    setBusy(false);
-    setConfirmForget(false);
-    if (res.ok) {
-      alert(
-        `Forgot ${tabDomain}: purged ${res.result?.pages_purged ?? 0} page(s). This domain is now blacklisted.`,
-      );
-    } else {
-      alert('Forget failed — check the server connection in Options.');
+    try {
+      const res = await send<{ ok: boolean; result?: { pages_purged?: number } }>({
+        type: 'forgetDomain',
+        domain: tabDomain,
+        reason: 'user requested from popup',
+      });
+      setConfirmForget(false);
+      if (res.ok) {
+        alert(
+          `Forgot ${tabDomain}: purged ${res.result?.pages_purged ?? 0} page(s). This domain is now blacklisted.`,
+        );
+        await refresh();
+      } else {
+        setMessageError('Forget failed — check the server connection in Options.');
+      }
+    } catch {
+      setMessageError('Forget failed because the background worker is unavailable.');
+    } finally {
+      setBusy(false);
     }
-    await refresh();
   };
 
   const retry = async (localId: string) => {
-    await send({ type: 'retryDead', localId });
-    await refresh();
+    try {
+      const reply = await send<{ ok: true } | MessageFailure>({ type: 'retryDead', localId });
+      unwrapMessage(reply);
+      await refresh();
+    } catch {
+      setMessageError('Could not retry this page.');
+    }
   };
 
   if (!state) return <div class="popup">Loading…</div>;
@@ -109,6 +153,8 @@ function Popup() {
       <div class="small muted mb">
         {settings.paused ? 'Auto-capture paused' : 'Auto-capturing pages you read'}
       </div>
+
+      {messageError && <div class="card small err-text mb" role="alert">{messageError}</div>}
 
       <div class="card small">
         <div class={statusDot === 'ok' ? 'ok-text' : statusDot === 'err' ? 'err-text' : ''}>
