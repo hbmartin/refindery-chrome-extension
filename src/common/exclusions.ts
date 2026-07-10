@@ -45,6 +45,49 @@ export const DEFAULT_SENSITIVE_DOMAINS: SensitiveDomain[] = [
   { category: 'adult', domain: 'onlyfans.com' },
 ];
 
+// URL path segments that strongly signal an authentication or payment flow.
+// Matching any of these skips capture as a privacy-safety default — a dynamic
+// complement to the static domain list, which can never enumerate every bank,
+// patient portal, or account area. Segment-exact matching (not substring) keeps
+// ordinary content like "/accounts-of-the-siege" from being caught.
+const SENSITIVE_PATH_SEGMENTS = new Set([
+  'login',
+  'signin',
+  'sign-in',
+  'log-in',
+  'logon',
+  'signup',
+  'sign-up',
+  'auth',
+  'oauth',
+  'oauth2',
+  'sso',
+  'saml',
+  'password',
+  'passwords',
+  'reset-password',
+  'forgot-password',
+  'checkout',
+  'payment',
+  'payments',
+  'billing',
+  'wallet',
+  'account',
+  'accounts',
+  'my-account',
+]);
+
+/** True when any path segment names an auth/payment flow. */
+export function hasSensitivePath(url: string): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return pathname.split('/').some((segment) => SENSITIVE_PATH_SEGMENTS.has(segment));
+}
+
 const LOCAL_HOST_EXACT = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
 /** RFC-1918 / loopback / link-local / *.local hosts. */
@@ -114,6 +157,8 @@ export function decideSkip(
       return { skip: true, reason: `sensitive:${entry.category}` };
     }
   }
+
+  if (hasSensitivePath(url)) return { skip: true, reason: 'sensitive-path' };
 
   for (const rule of opts.settings.userSkipRules) {
     if (matchesUserRule(url, host, rule)) {

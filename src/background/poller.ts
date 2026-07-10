@@ -9,6 +9,7 @@ import { TERMINAL_STATUSES } from '@/common/types';
 import { pollBackoffMs } from '@/common/backoff';
 import { getRecent, upsertRecent } from './recent';
 import { notifyDead } from './notify';
+import { browserApi } from '@/common/browser';
 
 interface PendingPoll {
   localId: string;
@@ -37,12 +38,12 @@ function withPendingLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function getPending(): Promise<PendingPoll[]> {
-  const raw = await chrome.storage.local.get(PENDING_KEY);
+  const raw = await browserApi.storage.local.get(PENDING_KEY);
   return (raw[PENDING_KEY] as PendingPoll[]) ?? [];
 }
 
 async function setPending(list: PendingPoll[]): Promise<void> {
-  await chrome.storage.local.set({ [PENDING_KEY]: list });
+  await browserApi.storage.local.set({ [PENDING_KEY]: list });
 }
 
 export async function pendingCount(): Promise<number> {

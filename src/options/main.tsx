@@ -11,14 +11,15 @@ import {
 } from '@/common/settings';
 import { DEFAULT_SENSITIVE_DOMAINS } from '@/common/exclusions';
 import type { BlacklistEntry } from '@/common/types';
+import { browserApi } from '@/common/browser';
 
 const CATEGORIES = Array.from(new Set(DEFAULT_SENSITIVE_DOMAINS.map((d) => d.category)));
 
 async function ensureHostPermission(baseUrl: string): Promise<boolean> {
   try {
     const origin = new URL(baseUrl).origin + '/*';
-    if (await chrome.permissions.contains({ origins: [origin] })) return true;
-    return await chrome.permissions.request({ origins: [origin] });
+    if (await browserApi.permissions.contains({ origins: [origin] })) return true;
+    return await browserApi.permissions.request({ origins: [origin] });
   } catch {
     return false;
   }

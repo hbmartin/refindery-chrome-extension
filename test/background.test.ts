@@ -101,6 +101,10 @@ beforeEach(() => {
         }),
       },
     },
+    tabs: {
+      query: vi.fn(async () => [{ id: 7, url: 'https://example.com/article' }]),
+      sendMessage: vi.fn(async () => ({ captured: true })),
+    },
   });
 });
 
@@ -158,6 +162,18 @@ describe('drainQueue', () => {
       expect.objectContaining({ state: 'indexing', contentChanged: true }),
     );
     expect(trackPage).toHaveBeenCalledWith('local-1', 'page-1');
+  });
+
+  it('records a capture stat on accepted ingests', async () => {
+    vi.mocked(queue.due).mockResolvedValueOnce([item()]);
+    vi.mocked(postPage).mockResolvedValueOnce({
+      kind: 'accepted',
+      body: { page_id: 'page-1', status: 'queued' },
+    });
+
+    await drainQueue();
+
+    expect(storage.captureStats).toMatchObject({ total: 1, today: 1 });
   });
 
   it('handles blacklisted pages without retrying', async () => {
@@ -455,6 +471,53 @@ describe('tick and message orchestration', () => {
       lastError: null,
     });
     expect(trackPage).toHaveBeenCalledWith('local-1', 'page-1');
+  });
+
+  it('relays a manual captureNow to the active tab and returns its result', async () => {
+    await expect(handleMessage({ type: 'captureNow' }, {})).resolves.toEqual({
+      ok: true,
+      captured: true,
+      reason: undefined,
+    });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(7, { type: 'captureNow' });
+  });
+
+  it('reports a clean failure when the tab has no content script', async () => {
+    vi.mocked(chrome.tabs.sendMessage).mockRejectedValueOnce(new Error('no receiver'));
+    const reply = (await handleMessage({ type: 'captureNow' }, {})) as { ok: boolean };
+    expect(reply.ok).toBe(false);
+  });
+
+  it('reports when there is no active tab to capture', async () => {
+    vi.mocked(chrome.tabs.query).mockResolvedValueOnce([]);
+    await expect(handleMessage({ type: 'captureNow' }, {})).resolves.toEqual({
+      ok: false,
+      error: 'no active tab',
+    });
+  });
+
+  it('lets a manual shouldCapture bypass pause and cooldown', async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ...DEFAULT_SETTINGS,
+      token: 'token',
+      paused: true,
+    });
+    storage.cooldown = { 'https://example.com/article': Date.now() };
+
+    await expect(
+      handleMessage(
+        { type: 'shouldCapture', url: 'https://example.com/article', manual: true },
+        {},
+      ),
+    ).resolves.toEqual({ capture: true });
+  });
+
+  it('still enforces cooldown for a non-manual shouldCapture', async () => {
+    storage.cooldown = { 'https://example.com/article': Date.now() };
+
+    await expect(
+      handleMessage({ type: 'shouldCapture', url: 'https://example.com/article' }, {}),
+    ).resolves.toEqual({ capture: false, reason: 'cooldown' });
   });
 
   it('routes state reads, pause changes, and incognito capture checks', async () => {

@@ -2,6 +2,9 @@
 // The bearer token is a secret and is intentionally kept in `local` (never
 // `sync`, which would replicate it through the user's Google account).
 
+import { browserApi } from './browser';
+import { createMutex } from './mutex';
+
 export interface NotifyPrefs {
   onDead: boolean;
   onServerDown: boolean;
@@ -52,8 +55,13 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const SETTINGS_KEY = 'settings';
 
+// Serialize the get-then-set in setSettings so concurrent writers (e.g. the
+// popup pause toggle firing while the options page is saving) can't clobber one
+// another with stale snapshots.
+const settingsMutex = createMutex();
+
 export async function getSettings(): Promise<Settings> {
-  const raw = await chrome.storage.local.get(SETTINGS_KEY);
+  const raw = await browserApi.storage.local.get(SETTINGS_KEY);
   const stored = (raw[SETTINGS_KEY] ?? {}) as Partial<Settings>;
   return {
     ...DEFAULT_SETTINGS,
@@ -62,19 +70,21 @@ export async function getSettings(): Promise<Settings> {
   };
 }
 
-export async function setSettings(patch: Partial<Settings>): Promise<Settings> {
-  const current = await getSettings();
-  const next: Settings = {
-    ...current,
-    ...patch,
-    notify: { ...current.notify, ...patch.notify },
-  };
-  await chrome.storage.local.set({ [SETTINGS_KEY]: next });
-  return next;
+export function setSettings(patch: Partial<Settings>): Promise<Settings> {
+  return settingsMutex(async () => {
+    const current = await getSettings();
+    const next: Settings = {
+      ...current,
+      ...patch,
+      notify: { ...current.notify, ...patch.notify },
+    };
+    await browserApi.storage.local.set({ [SETTINGS_KEY]: next });
+    return next;
+  });
 }
 
 export function onSettingsChanged(cb: (s: Settings) => void): void {
-  chrome.storage.onChanged.addListener((changes, area) => {
+  browserApi.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes[SETTINGS_KEY]) {
       void getSettings().then(cb);
     }

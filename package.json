@@ -19,7 +19,9 @@
     "audit": "npm audit --audit-level=high",
     "check:package": "node scripts/validate-build.mjs",
     "mock": "node mock-server/index.mjs",
-    "zip": "cd dist && zip -r ../refindery-extension.zip . && cd .."
+    "zip": "cd dist && zip -r ../refindery-extension.zip . && cd ..",
+    "build:firefox": "npm run build && node scripts/build-firefox.mjs",
+    "zip:firefox": "cd dist-firefox && zip -r ../refindery-extension-firefox.zip . && cd .."
   },
   "dependencies": {
     "dompurify": "^3.2.3",

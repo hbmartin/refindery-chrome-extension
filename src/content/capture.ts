@@ -1,10 +1,19 @@
 // Isolated-world content script. On page load and on SPA route changes, asks
 // the worker whether to capture; if so, sanitizes the DOM and sends a payload.
+// Also handles an explicit "capture now" request relayed from the popup / a
+// keyboard command / the context menu.
 
 import DOMPurify from 'dompurify';
-import type { CapturePayload, CaptureTrigger, ShouldCaptureReply } from '@/common/types';
+import type {
+  CapturePayload,
+  CaptureResult,
+  CaptureTrigger,
+  ShouldCaptureReply,
+} from '@/common/types';
 import { canonicalKey } from '@/common/canonical';
 import { MAX_BODY_BYTES } from '@/common/settings';
+import { redactSecrets } from '@/common/redact';
+import { browserApi } from '@/common/browser';
 
 const MIN_TEXT_CHARS = 200; // skip near-empty HTML pages
 const DEBOUNCE_MS = 700;
@@ -27,22 +36,41 @@ function faviconUrl(): string | null {
   }
 }
 
+// A visible password field is a strong signal that the page is a login / auth
+// surface even when its domain isn't on the sensitive list. Skipping these is a
+// privacy-safety default that applies even to explicit manual captures.
+function hasVisiblePasswordField(): boolean {
+  const fields = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
+  for (const el of fields) {
+    // offsetParent is null for display:none (and for position:fixed, which may
+    // still be visible) — fall back to client rects to catch the fixed case.
+    if (el.offsetParent !== null || el.getClientRects().length > 0) return true;
+  }
+  return false;
+}
+
 function sanitizeDocument(): string {
   // Keep document structure/text for the server's extractor, but drop scripts,
   // styles, event handlers, and other non-content noise to shrink the payload.
-  return DOMPurify.sanitize(document.documentElement.outerHTML, {
+  const clean = DOMPurify.sanitize(document.documentElement.outerHTML, {
     WHOLE_DOCUMENT: true,
     FORBID_TAGS: ['script', 'style', 'noscript', 'iframe', 'svg', 'canvas', 'template'],
     FORBID_ATTR: ['style'],
     KEEP_CONTENT: true,
   });
+  // Defence-in-depth: mask high-confidence secrets (payment cards, SSNs) that
+  // can appear in the DOM of an otherwise-allowed page before anything is sent.
+  return redactSecrets(clean);
 }
 
 function byteLength(s: string): number {
   return new TextEncoder().encode(s).length;
 }
 
-async function buildPayload(trigger: CaptureTrigger): Promise<CapturePayload | null> {
+async function buildPayload(
+  trigger: CaptureTrigger,
+  opts: { manual?: boolean } = {},
+): Promise<CapturePayload | null> {
   const url = location.href;
   const contentType = (document.contentType || '').toLowerCase();
   const isPdf = contentType === 'application/pdf' || /\.pdf($|\?)/i.test(url);
@@ -62,7 +90,9 @@ async function buildPayload(trigger: CaptureTrigger): Promise<CapturePayload | n
     return null;
   } else {
     const textLen = (document.body?.innerText ?? '').trim().length;
-    if (textLen < MIN_TEXT_CHARS) return null; // too thin to be worth indexing
+    // A manual capture is an explicit user request, so don't gate it on the
+    // thin-content threshold that suppresses noisy auto-captures.
+    if (!opts.manual && textLen < MIN_TEXT_CHARS) return null;
     const sanitized = sanitizeDocument();
     const bytes = byteLength(sanitized);
     if (bytes > MAX_BODY_BYTES) {
@@ -86,26 +116,32 @@ async function buildPayload(trigger: CaptureTrigger): Promise<CapturePayload | n
   };
 }
 
-async function attemptCapture(trigger: CaptureTrigger): Promise<void> {
+async function attemptCapture(trigger: CaptureTrigger): Promise<CaptureResult> {
+  const manual = trigger === 'manual';
   const url = location.href;
-  if (url === lastAttemptedHref && trigger !== 'manual') return;
+  if (!manual && url === lastAttemptedHref) return { captured: false, reason: 'duplicate' };
   lastAttemptedHref = url;
 
   let reply: ShouldCaptureReply;
   try {
-    reply = await chrome.runtime.sendMessage({ type: 'shouldCapture', url });
+    reply = await browserApi.runtime.sendMessage({ type: 'shouldCapture', url, manual });
   } catch {
-    return; // worker not available (e.g. during reload)
+    return { captured: false, reason: 'worker-unavailable' };
   }
-  if (!reply?.capture) return;
+  if (!reply?.capture) return { captured: false, reason: reply?.reason ?? 'skipped' };
 
-  const payload = await buildPayload(trigger);
-  if (!payload) return;
+  // DOM-based sensitivity check runs here (the worker can't see the page).
+  if (hasVisiblePasswordField()) return { captured: false, reason: 'sensitive-page' };
+
+  const payload = await buildPayload(trigger, { manual });
+  if (!payload) return { captured: false, reason: 'no-content' };
 
   try {
-    await chrome.runtime.sendMessage({ type: 'capture', payload });
+    await browserApi.runtime.sendMessage({ type: 'capture', payload });
+    return { captured: true };
   } catch {
-    /* swallow — worker may be restarting; next trigger will retry */
+    // worker may be restarting; an auto-trigger will retry, a manual one reports.
+    return { captured: false, reason: 'worker-unavailable' };
   }
 }
 
@@ -125,6 +161,22 @@ window.addEventListener('message', (e) => {
     lastAttemptedHref = '';
     scheduleCapture('spa');
   }
+});
+
+// Explicit "capture this page now" from the popup / command / context menu.
+// Runs immediately (no debounce) and reports its outcome back to the caller.
+browserApi.runtime.onMessage.addListener((msg: unknown, _sender, sendResponse) => {
+  if (
+    typeof msg !== 'object' ||
+    msg === null ||
+    (msg as { type?: unknown }).type !== 'captureNow'
+  ) {
+    return false;
+  }
+  void attemptCapture('manual').then(sendResponse, () =>
+    sendResponse({ captured: false, reason: 'error' }),
+  );
+  return true; // async response
 });
 
 // Initial capture for the full page load. document_idle means the DOM is ready;
