@@ -3,12 +3,11 @@ import { getStats, recordCapture } from '@/background/stats';
 import type { CaptureStats } from '@/common/types';
 
 let storage: Record<string, unknown>;
-const now = new Date();
-const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
-  now.getDate(),
-).padStart(2, '0')}`;
+const today = '2026-01-02';
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date(2026, 0, 2, 12));
   storage = {};
   vi.stubGlobal('chrome', {
     storage: {
@@ -29,8 +28,6 @@ afterEach(() => {
 
 describe('capture stats', () => {
   it('formats the local day without relying on locale output', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(2026, 0, 2, 12));
     expect(await getStats()).toEqual({ total: 0, today: 0, day: '2026-01-02' });
   });
 

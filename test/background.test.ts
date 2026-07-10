@@ -131,13 +131,19 @@ describe('context menu setup', () => {
     const events: string[] = [];
     vi.stubGlobal('browser', {
       contextMenus: {
-        removeAll: vi.fn(async () => {
-          events.push('removed');
-        }),
-        create: vi.fn(() => {
-          events.push('created');
-          return 'refindery-capture-now';
-        }),
+        // Defer the push past a microtask so the ordering only holds if the
+        // production code actually awaits removal before creating the menu.
+        removeAll: vi.fn(() =>
+          Promise.resolve().then(() => {
+            events.push('removed');
+          }),
+        ),
+        create: vi.fn(() =>
+          Promise.resolve().then(() => {
+            events.push('created');
+            return 'refindery-capture-now';
+          }),
+        ),
       },
     });
 

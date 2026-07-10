@@ -593,12 +593,16 @@ async function runMaintenance(): Promise<void> {
 export async function ensureContextMenu(): Promise<void> {
   if (!browserApi.contextMenus) return;
   // removeAll first so onInstalled/onStartup don't create duplicate entries.
+  // Promise.resolve bridges Chrome's synchronous typings and promise-returning
+  // WebExtension implementations while preserving rejection propagation.
   await Promise.resolve(browserApi.contextMenus.removeAll());
-  browserApi.contextMenus.create({
-    id: CONTEXT_MENU_ID,
-    title: 'Capture this page for Refindery',
-    contexts: ['page'],
-  });
+  await Promise.resolve(
+    browserApi.contextMenus.create({
+      id: CONTEXT_MENU_ID,
+      title: 'Capture this page for Refindery',
+      contexts: ['page'],
+    }),
+  );
 }
 
 export function registerLifecycleListeners(): void {
