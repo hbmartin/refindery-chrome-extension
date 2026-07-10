@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { decideSkip, isLocalHost, hostMatchesDomain, urlMatchesGlob } from '@/common/exclusions';
+import {
+  decideSkip,
+  hasSensitivePath,
+  isLocalHost,
+  hostMatchesDomain,
+  urlMatchesGlob,
+} from '@/common/exclusions';
 import { DEFAULT_SETTINGS, type Settings } from '@/common/settings';
 
 const base: Settings = { ...DEFAULT_SETTINGS };
@@ -75,7 +81,32 @@ describe('decideSkip', () => {
     );
     expect(d.reason).toBe('user-rule:blocked.com');
   });
+  it('skips auth/payment URL paths on otherwise-allowed domains', () => {
+    for (const url of [
+      'https://news.example.com/login',
+      'https://shop.example.com/checkout/step-2',
+      'https://example.com/account/settings',
+      'https://example.com/oauth2/authorize?client_id=x',
+    ]) {
+      const d = decideSkip(url, ctx());
+      expect(d.skip).toBe(true);
+      expect(d.reason).toBe('sensitive-path');
+    }
+  });
   it('allows ordinary public pages', () => {
     expect(decideSkip('https://en.wikipedia.org/wiki/Cats', ctx()).skip).toBe(false);
+  });
+});
+
+describe('hasSensitivePath', () => {
+  it('matches whole path segments, not substrings', () => {
+    expect(hasSensitivePath('https://example.com/login')).toBe(true);
+    expect(hasSensitivePath('https://example.com/my-account/profile')).toBe(true);
+    // "accounts-of-the-siege" is one segment; it must not trip the "accounts" rule.
+    expect(hasSensitivePath('https://example.com/accounts-of-the-siege')).toBe(false);
+    expect(hasSensitivePath('https://example.com/articles/how-to-log-in-safely')).toBe(false);
+  });
+  it('returns false for unparseable urls', () => {
+    expect(hasSensitivePath('not a url')).toBe(false);
   });
 });

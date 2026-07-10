@@ -20,6 +20,15 @@ clustering are consumer features and are out of scope here.
   (`chrome://`, `file://`, localhost/RFC-1918), or a default, editable list of
   **sensitive-category** domains (banking, health, webmail, adult) — plus any
   custom skip rules you add.
+- **Heuristic sensitive-page skips** complement the domain list: pages whose URL
+  path names an auth/payment flow (`/login`, `/checkout`, `/account`, …) or that
+  contain a **visible password field** are skipped even on allowed domains.
+- **Secret redaction**: before HTML is sent, Luhn-valid payment-card numbers and
+  US SSNs found in the DOM are masked (`[REDACTED-CC]` / `[REDACTED-SSN]`).
+- **Capture this page** on demand from the popup, the `Ctrl/Cmd+Shift+S`
+  keyboard command, or the right-click context menu — a manual capture bypasses
+  the pause switch and the re-capture cooldown (but still honours privacy skips).
+- The popup shows lightweight **capture stats** (today / total).
 - Re-sends are **throttled** per canonical URL (default 24h cooldown).
 - A **durable IndexedDB queue** holds captures; sending is gated on
   `GET /readyz` and drains with exponential backoff, so nothing is lost while
@@ -60,10 +69,24 @@ npm test                  # Vitest unit tests
 npm run test:coverage     # tests plus global coverage thresholds
 npm run audit             # fail on high-or-worse dependency vulnerabilities
 npm run mock              # start the in-memory mock Refindery server (port 8000)
-npm run build             # typecheck + production build
+npm run build             # typecheck + production build (Chrome, → dist/)
 npm run check:package     # validate built manifest assets after a build
 npm run zip               # package dist/ → refindery-extension.zip
+npm run build:firefox     # build, then emit a Firefox MV3 build → dist-firefox/
+npm run zip:firefox       # package dist-firefox/ → refindery-extension-firefox.zip
 ```
+
+### Firefox
+
+`npm run build:firefox` runs the normal Chrome build, then rewrites the manifest
+for Firefox MV3 (`background.scripts` instead of `service_worker`, plus a
+`browser_specific_settings.gecko` id) into `dist-firefox/`. All WebExtension API
+calls go through a single `browserApi` shim (`src/common/browser.ts`) that
+resolves to Firefox's promise-based `browser` global or Chrome's `chrome`, so
+one code path serves both. Load it via `about:debugging` → **This Firefox** →
+**Load Temporary Add-on** → `dist-firefox/manifest.json`. The Firefox build is
+produced by construction from the Chrome bundle; validate it in Firefox before
+publishing.
 
 `npm run lint:semgrep` expects the Semgrep CLI to be available on `PATH`.
 
@@ -107,7 +130,11 @@ in `chrome.storage.local` (this device only, never synced).
 | Durable queue            | `src/background/queue.ts`  |
 | API client               | `src/background/client.ts` |
 | Status poller / retry    | `src/background/poller.ts` |
+| Capture stats            | `src/background/stats.ts`  |
 | Canonicalization         | `src/common/canonical.ts`  |
 | Exclusion rules          | `src/common/exclusions.ts` |
+| Secret redaction         | `src/common/redact.ts`     |
 | Settings                 | `src/common/settings.ts`   |
+| Storage write mutex      | `src/common/mutex.ts`      |
+| Cross-browser API shim   | `src/common/browser.ts`    |
 | Popup / Options (Preact) | `src/popup`, `src/options` |

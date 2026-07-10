@@ -47,7 +47,13 @@ export default defineManifest({
       all_frames: false,
     },
   ],
-  permissions: ['storage', 'alarms', 'notifications', 'tabs'],
+  commands: {
+    'capture-now': {
+      suggested_key: { default: 'Ctrl+Shift+S', mac: 'Command+Shift+S' },
+      description: 'Capture the current page for Refindery',
+    },
+  },
+  permissions: ['storage', 'alarms', 'notifications', 'tabs', 'contextMenus'],
   // Default server origin. Custom origins are requested at runtime via
   // optional_host_permissions when the user changes the base URL in Options.
   host_permissions: ['http://127.0.0.1/*', 'http://localhost/*'],

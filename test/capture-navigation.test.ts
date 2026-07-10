@@ -27,7 +27,9 @@ describe('capture navigation messages', () => {
     const sendMessage = vi.fn(async (message: { type: string }) =>
       message.type === 'shouldCapture' ? { capture: true } : { ok: true },
     );
-    vi.stubGlobal('chrome', { runtime: { sendMessage } });
+    vi.stubGlobal('chrome', {
+      runtime: { sendMessage, onMessage: { addListener: vi.fn() } },
+    });
 
     await import('@/content/capture');
     await vi.advanceTimersByTimeAsync(700);

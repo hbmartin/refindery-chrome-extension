@@ -2,6 +2,7 @@
 // cooldown/403 bookkeeping, badge, and notifications.
 
 import type {
+  CaptureResult,
   IngestPageRequest,
   QueueItem,
   RuntimeMessage,
@@ -11,6 +12,8 @@ import { getSettings } from '@/common/settings';
 import { canonicalKey, domainOf, hostOf } from '@/common/canonical';
 import { decideSkip, hostMatchesDomain } from '@/common/exclusions';
 import { sendBackoffMs } from '@/common/backoff';
+import { browserApi } from '@/common/browser';
+import { createMutex } from '@/common/mutex';
 import type { ServerConfig } from './client';
 import { deleteBlacklist, forget, isReady, listBlacklist, postPage } from './client';
 import * as queue from './queue';
@@ -18,6 +21,10 @@ import { pollDue, pendingCount, trackPage, retryDeadPage } from './poller';
 import { getRecent, upsertRecent, updateBadge } from './recent';
 import { notifyServerDown } from './notify';
 import { revisitDisposition } from './revisit';
+import { getStats, recordCapture } from './stats';
+
+const CONTEXT_MENU_ID = 'refindery-capture-now';
+const CAPTURE_COMMAND = 'capture-now';
 
 const MAINTENANCE_ALARM = 'maintenance';
 const DRAIN_BATCH = 10;
@@ -28,12 +35,20 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function assertNever(value: never): never {
+  throw new Error(`Unhandled runtime message: ${JSON.stringify(value)}`);
+}
+
 // ── Cooldown (per canonical URL) ─────────────────────────────────────────
 
 const COOLDOWN_KEY = 'cooldown';
 
+// Serialize the read-modify-write of the shared cooldown map so concurrent
+// drains/captures can't clobber one another's entries.
+const cooldownMutex = createMutex();
+
 async function getCooldownMap(): Promise<Record<string, number>> {
-  const raw = await chrome.storage.local.get(COOLDOWN_KEY);
+  const raw = await browserApi.storage.local.get(COOLDOWN_KEY);
   return (raw[COOLDOWN_KEY] as Record<string, number>) ?? {};
 }
 
@@ -43,32 +58,59 @@ async function isOnCooldown(key: string, windowMs: number): Promise<boolean> {
   return last != null && Date.now() - last < windowMs;
 }
 
-async function markSent(key: string, windowMs: number): Promise<void> {
-  const map = await getCooldownMap();
-  map[key] = Date.now();
-  // prune stale entries so the map can't grow unbounded
-  const cutoff = Date.now() - windowMs;
-  for (const k of Object.keys(map)) {
-    if (map[k] < cutoff) delete map[k];
-  }
-  await chrome.storage.local.set({ [COOLDOWN_KEY]: map });
+async function markSent(key: string): Promise<void> {
+  await cooldownMutex(async () => {
+    const map = await getCooldownMap();
+    map[key] = Date.now();
+    await browserApi.storage.local.set({ [COOLDOWN_KEY]: map });
+  });
+}
+
+// Drop cooldown entries older than the window. Run from the maintenance alarm
+// rather than on every send, so the drain hot path doesn't rescan/rewrite the
+// whole map each time a page is accepted.
+async function pruneCooldownMap(windowMs: number): Promise<void> {
+  await cooldownMutex(async () => {
+    const map = await getCooldownMap();
+    const cutoff = Date.now() - windowMs;
+    let changed = false;
+    for (const k of Object.keys(map)) {
+      if (map[k] < cutoff) {
+        delete map[k];
+        changed = true;
+      }
+    }
+    if (changed) await browserApi.storage.local.set({ [COOLDOWN_KEY]: map });
+  });
 }
 
 // ── Cached server-blacklist patterns (avoid re-POSTing known-403 targets) ──
 
 const BLOCKED_KEY = 'blocked403';
 
+// Serialize writes to the cached blacklist so a concurrent add + clear (or two
+// adds) can't drop an entry via a stale snapshot.
+const blockedMutex = createMutex();
+
 async function getBlockedPatterns(): Promise<string[]> {
-  const raw = await chrome.storage.local.get(BLOCKED_KEY);
+  const raw = await browserApi.storage.local.get(BLOCKED_KEY);
   return (raw[BLOCKED_KEY] as string[]) ?? [];
 }
 
 async function addBlockedPattern(pattern: string): Promise<void> {
-  const list = await getBlockedPatterns();
-  if (!list.includes(pattern)) {
-    list.push(pattern);
-    await chrome.storage.local.set({ [BLOCKED_KEY]: list });
-  }
+  await blockedMutex(async () => {
+    const list = await getBlockedPatterns();
+    if (!list.includes(pattern)) {
+      list.push(pattern);
+      await browserApi.storage.local.set({ [BLOCKED_KEY]: list });
+    }
+  });
+}
+
+async function clearBlockedPatterns(): Promise<void> {
+  await blockedMutex(async () => {
+    await browserApi.storage.local.set({ [BLOCKED_KEY]: [] });
+  });
 }
 
 async function isBlocked(url: string): Promise<boolean> {
@@ -82,28 +124,31 @@ async function isBlocked(url: string): Promise<boolean> {
 
 const AUTH_ERR_KEY = 'authError';
 async function setAuthError(v: boolean): Promise<void> {
-  await chrome.storage.local.set({ [AUTH_ERR_KEY]: v });
+  await browserApi.storage.local.set({ [AUTH_ERR_KEY]: v });
 }
 async function hasAuthError(): Promise<boolean> {
-  const raw = await chrome.storage.local.get(AUTH_ERR_KEY);
+  const raw = await browserApi.storage.local.get(AUTH_ERR_KEY);
   return Boolean(raw[AUTH_ERR_KEY]);
 }
 
 // ── Capture decision (called by content script before it serializes) ──────
 
-async function shouldCapture(url: string): Promise<ShouldCaptureReply> {
+async function shouldCapture(url: string, manual = false): Promise<ShouldCaptureReply> {
   const settings = await getSettings();
   const decision = decideSkip(url, {
     incognito: false, // sender.tab.incognito is checked separately below
-    paused: settings.paused,
+    // An explicit manual capture overrides the global pause, but still honours
+    // the privacy exclusions (sensitive domains/paths, local hosts, …).
+    paused: manual ? false : settings.paused,
     settings,
   });
   if (decision.skip) return { capture: false, reason: decision.reason };
 
   if (await isBlocked(url)) return { capture: false, reason: 'server-blacklisted' };
 
+  // Manual captures deliberately bypass the re-capture cooldown.
   const key = canonicalKey(url);
-  if (key && (await isOnCooldown(key, settings.cooldownMs))) {
+  if (!manual && key && (await isOnCooldown(key, settings.cooldownMs))) {
     return { capture: false, reason: 'cooldown' };
   }
   return { capture: true };
@@ -159,7 +204,8 @@ export async function drainQueue(): Promise<boolean> {
     switch (outcome.kind) {
       case 'accepted': {
         await setAuthError(false);
-        if (p.canonicalKey) await markSentForItem(p.canonicalKey);
+        if (p.canonicalKey) await markSent(p.canonicalKey);
+        await recordCapture();
         await upsertRecent({
           localId: item.id,
           url: p.url,
@@ -174,7 +220,8 @@ export async function drainQueue(): Promise<boolean> {
       }
       case 'revisit': {
         await setAuthError(false);
-        if (p.canonicalKey) await markSentForItem(p.canonicalKey);
+        if (p.canonicalKey) await markSent(p.canonicalKey);
+        await recordCapture();
         const disposition = revisitDisposition(outcome.body.status);
         await upsertRecent({
           localId: item.id,
@@ -258,9 +305,35 @@ export async function drainQueue(): Promise<boolean> {
   return true;
 }
 
-async function markSentForItem(key: string): Promise<void> {
-  const s = await getSettings();
-  await markSent(key, s.cooldownMs);
+// ── Manual capture (popup button / keyboard command / context menu) ───────
+
+interface ManualCaptureReply {
+  ok: boolean;
+  captured?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+/**
+ * Relay a "capture now" request to the content script in the given tab (or the
+ * active tab). Fails cleanly when the tab has no content script — chrome://,
+ * the PDF viewer, the web store, etc.
+ */
+async function triggerManualCapture(tabId?: number): Promise<ManualCaptureReply> {
+  let id = tabId;
+  if (id == null) {
+    const [tab] = await browserApi.tabs.query({ active: true, currentWindow: true });
+    id = tab?.id;
+  }
+  if (id == null) return { ok: false, error: 'no active tab' };
+  try {
+    const res = (await browserApi.tabs.sendMessage(id, { type: 'captureNow' })) as
+      | CaptureResult
+      | undefined;
+    return { ok: true, captured: res?.captured ?? false, reason: res?.reason };
+  } catch {
+    return { ok: false, error: 'This page can’t be captured.' };
+  }
 }
 
 // ── Tick: drain + poll + badge, self-chaining while work remains ──────────
@@ -270,8 +343,8 @@ let tickRequested = false;
 
 async function pendingReleaseBackoffsRequest(): Promise<string | null> {
   const [requestedRaw, handledRaw] = await Promise.all([
-    chrome.storage.local.get(RELEASE_BACKOFFS_REQUEST_KEY),
-    chrome.storage.local.get(RELEASE_BACKOFFS_HANDLED_KEY),
+    browserApi.storage.local.get(RELEASE_BACKOFFS_REQUEST_KEY),
+    browserApi.storage.local.get(RELEASE_BACKOFFS_HANDLED_KEY),
   ]);
   const requested = requestedRaw[RELEASE_BACKOFFS_REQUEST_KEY];
   const handled = handledRaw[RELEASE_BACKOFFS_HANDLED_KEY];
@@ -295,7 +368,7 @@ export async function tick(): Promise<void> {
         // A newer request written during the release retains a different ID
         // and is therefore processed by the next coalesced pass.
         await queue.releaseBackoffs();
-        await chrome.storage.local.set({
+        await browserApi.storage.local.set({
           [RELEASE_BACKOFFS_HANDLED_KEY]: releaseRequest,
         });
       }
@@ -333,8 +406,30 @@ function scheduleTick(): void {
 
 // ── Message routing ────────────────────────────────────────────────────────
 
+const RUNTIME_MESSAGE_TYPES = {
+  shouldCapture: true,
+  capture: true,
+  captureNow: true,
+  getState: true,
+  setPaused: true,
+  forgetDomain: true,
+  forgetUrl: true,
+  listBlacklist: true,
+  deleteBlacklist: true,
+  retryDead: true,
+  testConnection: true,
+  settingsChanged: true,
+} satisfies Record<RuntimeMessage['type'], true>;
+
+function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
+  if (typeof msg !== 'object' || msg === null || !('type' in msg)) return false;
+  return Object.hasOwn(RUNTIME_MESSAGE_TYPES, (msg as { type: PropertyKey }).type);
+}
+
 export function registerMessageListener(): void {
-  chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse) => {
+  browserApi.runtime.onMessage.addListener((msg: unknown, sender, sendResponse) => {
+    if (!isRuntimeMessage(msg)) return false;
+
     void handleMessage(msg, sender).then(sendResponse, (error: unknown) => {
       sendResponse({
         ok: false,
@@ -352,7 +447,7 @@ export async function handleMessage(
   switch (msg.type) {
     case 'shouldCapture': {
       if (sender.tab?.incognito) return { capture: false, reason: 'incognito' };
-      return shouldCapture(msg.url);
+      return shouldCapture(msg.url, msg.manual ?? false);
     }
     case 'capture': {
       const item = await queue.enqueue(msg.payload);
@@ -366,18 +461,23 @@ export async function handleMessage(
       scheduleTick();
       return { ok: true };
     }
+    case 'captureNow': {
+      return triggerManualCapture(msg.tabId);
+    }
     case 'getState': {
-      const [settings, recent, queueCount, pending] = await Promise.all([
+      const [settings, recent, queueCount, pending, stats] = await Promise.all([
         getSettings(),
         getRecent(),
         queue.count(),
         pendingCount(),
+        getStats(),
       ]);
       return {
         settings,
         recent,
         queueCount,
         pending,
+        stats,
         authError: await hasAuthError(),
       };
     }
@@ -425,7 +525,7 @@ export async function handleMessage(
         await deleteBlacklist(cfg, msg.id);
         // The cached 403 set is only an optimization; clear it so unblocked
         // targets can be captured again.
-        await chrome.storage.local.set({ [BLOCKED_KEY]: [] });
+        await clearBlockedPatterns();
         return { ok: true };
       } catch (error) {
         return { ok: false, error: errorMessage(error) };
@@ -463,38 +563,76 @@ export async function handleMessage(
       // waiting out retry backoffs accrued while the old settings were broken.
       // Defer the release to the next tick pass so an in-flight request using
       // the old settings cannot write a fresh backoff after we clear them.
-      await chrome.storage.local.set({
+      await browserApi.storage.local.set({
         [RELEASE_BACKOFFS_REQUEST_KEY]: crypto.randomUUID(),
       });
       scheduleTick();
       return { ok: true };
     }
+    default:
+      // Exhaustiveness guard: every RuntimeMessage variant is handled above, so
+      // adding a new one without a case here becomes a compile error.
+      return assertNever(msg);
   }
-
-  return undefined;
 }
 
 // ── Lifecycle wiring ────────────────────────────────────────────────────────
 
+// Periodic upkeep on the maintenance alarm: prune stale cooldown entries off
+// the drain hot path, then run a normal tick.
+async function runMaintenance(): Promise<void> {
+  try {
+    const s = await getSettings();
+    await pruneCooldownMap(s.cooldownMs);
+  } catch (error) {
+    console.error('Refindery cooldown prune failed', error);
+  }
+  scheduleTick();
+}
+
+function ensureContextMenu(): void {
+  // removeAll first so onInstalled/onStartup don't create duplicate entries.
+  browserApi.contextMenus.removeAll(() => {
+    browserApi.contextMenus.create({
+      id: CONTEXT_MENU_ID,
+      title: 'Capture this page for Refindery',
+      contexts: ['page'],
+    });
+  });
+}
+
 export function registerLifecycleListeners(): void {
-  chrome.runtime.onInstalled.addListener(() => {
-    void chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+  browserApi.runtime.onInstalled.addListener(() => {
+    void browserApi.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+    ensureContextMenu();
     scheduleTick();
   });
 
-  chrome.runtime.onStartup.addListener(() => {
-    void chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+  browserApi.runtime.onStartup.addListener(() => {
+    void browserApi.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+    ensureContextMenu();
     scheduleTick();
   });
 
-  chrome.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === MAINTENANCE_ALARM) scheduleTick();
+  browserApi.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === MAINTENANCE_ALARM) void runMaintenance();
+  });
+}
+
+// Keyboard command + context-menu entry both funnel through triggerManualCapture.
+export function registerManualCaptureTriggers(): void {
+  browserApi.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === CONTEXT_MENU_ID) void triggerManualCapture(tab?.id);
+  });
+  browserApi.commands.onCommand.addListener((command) => {
+    if (command === CAPTURE_COMMAND) void triggerManualCapture();
   });
 }
 
 if (import.meta.env.MODE !== 'test') {
   registerMessageListener();
   registerLifecycleListeners();
+  registerManualCaptureTriggers();
   // Kick once when the worker spins up (e.g. after being suspended).
   scheduleTick();
 }

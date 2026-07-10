@@ -2,21 +2,53 @@ import { render } from 'preact';
 import { useEffect, useState, useCallback } from 'preact/hooks';
 import '@/ui/styles.css';
 import { send } from '@/ui/messaging';
-import type { RecentEntry } from '@/common/types';
+import type { CaptureStats, RecentEntry } from '@/common/types';
 import type { Settings } from '@/common/settings';
 import { domainOf } from '@/common/canonical';
+import { browserApi } from '@/common/browser';
 
 interface State {
   settings: Settings;
   recent: RecentEntry[];
   queueCount: number;
   pending: number;
+  stats: CaptureStats;
   authError: boolean;
 }
 
 interface MessageFailure {
   ok: false;
   error?: string;
+}
+
+interface ManualCaptureReply {
+  ok: boolean;
+  captured?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+// Turn a machine reason code from a skipped capture into a short human line.
+function reasonText(reason: string | undefined): string {
+  switch (reason) {
+    case 'cooldown':
+      return 'already captured recently';
+    case 'sensitive-page':
+      return 'looks like a login page';
+    case 'sensitive-path':
+      return 'looks like an account/payment page';
+    case 'server-blacklisted':
+      return 'this site is blacklisted';
+    case 'no-content':
+      return 'no capturable content';
+    case 'non-web-scheme':
+    case 'local-host':
+      return 'this page can’t be captured';
+    default:
+      if (reason?.startsWith('sensitive:')) return `sensitive category (${reason.slice(10)})`;
+      if (reason?.startsWith('user-rule:')) return 'matches one of your skip rules';
+      return reason ?? 'skipped';
+  }
 }
 
 function unwrapMessage<T>(reply: T | MessageFailure): T {
@@ -58,7 +90,7 @@ function Popup() {
     void send<{ ready: boolean; authOk: boolean } | MessageFailure>({ type: 'testConnection' })
       .then((reply) => setConn(unwrapMessage<{ ready: boolean; authOk: boolean }>(reply)))
       .catch(() => setMessageError('Could not test the server connection.'));
-    void chrome.tabs
+    void browserApi.tabs
       .query({ active: true, currentWindow: true })
       .then(([tab]) => {
         if (tab?.url) setTabDomain(domainOf(tab.url));
@@ -102,6 +134,29 @@ function Popup() {
           ? err.message
           : 'Forget failed — check the server connection in Options.',
       );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const captureNow = async () => {
+    setBusy(true);
+    setNotice(null);
+    setMessageError(null);
+    try {
+      const reply = await send<ManualCaptureReply>({ type: 'captureNow' });
+      // Refresh first — it clears messageError on success — then surface the
+      // capture outcome so it isn't immediately wiped.
+      await refresh();
+      if (reply.ok && reply.captured) {
+        setNotice('Captured this page.');
+      } else if (reply.ok) {
+        setMessageError(`Not captured — ${reasonText(reply.reason)}.`);
+      } else {
+        setMessageError(reply.error ?? 'Could not capture this page.');
+      }
+    } catch {
+      setMessageError('Could not capture this page.');
     } finally {
       setBusy(false);
     }
@@ -173,6 +228,15 @@ function Popup() {
         <div class="muted mt">
           Queued: {state.queueCount} · Tracking: {state.pending}
         </div>
+        <div class="muted">
+          Captured: {state.stats.today} today · {state.stats.total} total
+        </div>
+      </div>
+
+      <div class="row mt">
+        <button class="primary" style="flex:1" disabled={busy} onClick={captureNow}>
+          {busy ? '…' : 'Capture this page'}
+        </button>
       </div>
 
       {tabDomain && (
@@ -231,10 +295,10 @@ function Popup() {
       </div>
 
       <div class="row mt small">
-        <button class="link-button" onClick={() => void chrome.runtime.openOptionsPage()}>
+        <button class="link-button" onClick={() => void browserApi.runtime.openOptionsPage()}>
           Settings & privacy
         </button>
-        <span class="muted">v{chrome.runtime.getManifest().version}</span>
+        <span class="muted">v{browserApi.runtime.getManifest().version}</span>
       </div>
     </div>
   );

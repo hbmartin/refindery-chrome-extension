@@ -183,8 +183,9 @@ export interface RecentEntry {
 // ── Messaging between content script / popup / options and worker ─────────
 
 export type RuntimeMessage =
-  | { type: 'shouldCapture'; url: string }
+  | { type: 'shouldCapture'; url: string; manual?: boolean }
   | { type: 'capture'; payload: CapturePayload }
+  | { type: 'captureNow'; tabId?: number }
   | { type: 'getState' }
   | { type: 'setPaused'; paused: boolean }
   | { type: 'forgetDomain'; domain: string; reason?: string }
@@ -198,4 +199,21 @@ export type RuntimeMessage =
 export interface ShouldCaptureReply {
   capture: boolean;
   reason?: string;
+}
+
+/** Result of a capture attempt, returned by the content script to the popup. */
+export interface CaptureResult {
+  captured: boolean;
+  reason?: string;
+}
+
+// ── Internal: capture counters surfaced in the popup ─────────────────────
+
+export interface CaptureStats {
+  /** Successful ingests (accepted + revisit) ever recorded on this device. */
+  total: number;
+  /** Successful ingests recorded during `day`. */
+  today: number;
+  /** Local calendar day (YYYY-MM-DD) that `today` counts. */
+  day: string;
 }

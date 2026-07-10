@@ -3,6 +3,7 @@
 
 import type { RecentEntry } from '@/common/types';
 import { MAX_RECENT_ENTRIES } from '@/common/settings';
+import { browserApi } from '@/common/browser';
 
 const RECENT_KEY = 'recent';
 
@@ -12,7 +13,7 @@ const RECENT_KEY = 'recent';
 let recentWrite = Promise.resolve();
 
 export async function getRecent(): Promise<RecentEntry[]> {
-  const raw = await chrome.storage.local.get(RECENT_KEY);
+  const raw = await browserApi.storage.local.get(RECENT_KEY);
   return (raw[RECENT_KEY] as RecentEntry[]) ?? [];
 }
 
@@ -40,7 +41,7 @@ export function upsertRecent(
     }
     // newest first, capped
     list.sort((a, b) => b.updatedAt - a.updatedAt);
-    await chrome.storage.local.set({ [RECENT_KEY]: list.slice(0, MAX_RECENT_ENTRIES) });
+    await browserApi.storage.local.set({ [RECENT_KEY]: list.slice(0, MAX_RECENT_ENTRIES) });
   });
 
   // Keep the chain usable after a failed storage operation while still
@@ -58,15 +59,15 @@ export async function findByPageId(pageId: string): Promise<RecentEntry | undefi
 
 export async function updateBadge(opts: { queueCount: number; error?: boolean }): Promise<void> {
   if (opts.error) {
-    await chrome.action.setBadgeText({ text: '!' });
-    await chrome.action.setBadgeBackgroundColor({ color: '#DC2626' });
+    await browserApi.action.setBadgeText({ text: '!' });
+    await browserApi.action.setBadgeBackgroundColor({ color: '#DC2626' });
     return;
   }
   if (opts.queueCount > 0) {
     const text = opts.queueCount > 99 ? '99+' : String(opts.queueCount);
-    await chrome.action.setBadgeText({ text });
-    await chrome.action.setBadgeBackgroundColor({ color: '#4F46E5' });
+    await browserApi.action.setBadgeText({ text });
+    await browserApi.action.setBadgeBackgroundColor({ color: '#4F46E5' });
     return;
   }
-  await chrome.action.setBadgeText({ text: '' });
+  await browserApi.action.setBadgeText({ text: '' });
 }

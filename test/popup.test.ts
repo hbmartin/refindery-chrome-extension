@@ -57,6 +57,7 @@ describe('popup action errors', () => {
             ],
             queueCount: 0,
             pending: 0,
+            stats: { total: 3, today: 1, day: '2026-07-10' },
             authError: false,
           };
         case 'testConnection':
