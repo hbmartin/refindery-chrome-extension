@@ -1,0 +1,55 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "ignorePatterns": ["coverage/**", "dist/**", "reviews_triage/**"],
+  "plugins": ["typescript", "unicorn", "oxc", "import", "react", "vitest", "jsx-a11y"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "options": {
+    "typeAware": true,
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "error"
+  },
+  "rules": {
+    "eslint/no-await-in-loop": "off",
+    "react/react-in-jsx-scope": "off",
+    "react/style-prop-object": "off",
+    "typescript/no-unsafe-type-assertion": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/options/main.tsx", "src/popup/main.tsx", "test/queue.test.ts"],
+      "rules": {
+        "import/no-unassigned-import": "off"
+      }
+    },
+    {
+      "files": ["src/background/queue.ts"],
+      "rules": {
+        "eslint/no-underscore-dangle": "off",
+        "unicorn/prefer-add-event-listener": "off"
+      }
+    },
+    {
+      "files": ["src/content/spa-hook.ts"],
+      "rules": {
+        "unicorn/consistent-function-scoping": "off"
+      }
+    },
+    {
+      "files": ["mock-server/**/*.mjs", "scripts/generate-icons.mjs"],
+      "rules": {
+        "eslint/no-underscore-dangle": "off"
+      }
+    },
+    {
+      "files": ["test/**/*.test.ts"],
+      "rules": {
+        "unicorn/no-array-sort": "off",
+        "vitest/require-mock-type-parameters": "off"
+      }
+    }
+  ]
+}

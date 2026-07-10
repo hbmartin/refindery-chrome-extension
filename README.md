@@ -5,7 +5,7 @@ A Chrome (MV3) extension that acts as an **upstream source** for
 you read and ingests them into your local Refindery instance so everything you
 read becomes durably searchable — with no manual effort.
 
-It only implements the *ingest & lifecycle* surface of the Refindery API
+It only implements the _ingest & lifecycle_ surface of the Refindery API
 (`POST /v1/pages`, status polling, forget/blacklist, jobs). Search/compare/
 clustering are consumer features and are out of scope here.
 
@@ -49,16 +49,37 @@ clustering are consumer features and are out of scope here.
 ## Development
 
 ```bash
-npm run dev        # Vite + HMR (load dist/ unpacked, reloads on change)
-npm test           # Vitest unit tests
+npm run dev               # Vite + HMR (load dist/ unpacked, reloads on change)
+npm run format            # format supported files with Oxfmt
+npm run format:check      # verify formatting without rewriting files
+npm run lint:code         # type-aware Oxlint checks
 npm run lint:architecture # enforce background/UI dependency boundaries
 npm run lint:semgrep      # check timeout, parsing, and messaging guardrails
-npm run mock       # start the in-memory mock Refindery server (port 8000)
-npm run build      # typecheck + production build
-npm run zip        # package dist/ → refindery-extension.zip
+npm run lint              # run every formatting and linting gate
+npm test                  # Vitest unit tests
+npm run test:coverage     # tests plus global coverage thresholds
+npm run audit             # fail on high-or-worse dependency vulnerabilities
+npm run mock              # start the in-memory mock Refindery server (port 8000)
+npm run build             # typecheck + production build
+npm run check:package     # validate built manifest assets after a build
+npm run zip               # package dist/ → refindery-extension.zip
 ```
 
 `npm run lint:semgrep` expects the Semgrep CLI to be available on `PATH`.
+
+Oxlint enables type-aware correctness, suspicious-code, performance, import,
+Vitest, React-hooks, and accessibility checks. Its configuration keeps narrow
+exceptions for Preact's automatic JSX runtime and string styles, intentional
+sequential queue processing, CSS/IndexedDB side-effect patterns, Chrome and DOM
+type boundaries, and ES2022-compatible test mocks. Oxfmt preserves the existing
+single-quote and semicolon style at a 100-column print width.
+
+## Continuous integration
+
+GitHub Actions runs formatting, linting, architecture checks, TypeScript,
+Semgrep, dependency auditing/review, CodeQL, and the test suite on Node 22 and 24. The Node 24 test run enforces 70% statements, branches, and lines plus 60%
+functions. Successful builds are validated, zipped, integrity-checked, and
+retained as workflow artifacts for seven days.
 
 ### Manual E2E against the mock server
 
@@ -78,15 +99,15 @@ in `chrome.storage.local` (this device only, never synced).
 
 ## Architecture
 
-| Area | Module |
-|------|--------|
-| Capture (isolated world) | `src/content/capture.ts` |
-| SPA hook (MAIN world) | `src/content/spa-hook.ts` |
-| Orchestrator | `src/background/index.ts` |
-| Durable queue | `src/background/queue.ts` |
-| API client | `src/background/client.ts` |
-| Status poller / retry | `src/background/poller.ts` |
-| Canonicalization | `src/common/canonical.ts` |
-| Exclusion rules | `src/common/exclusions.ts` |
-| Settings | `src/common/settings.ts` |
+| Area                     | Module                     |
+| ------------------------ | -------------------------- |
+| Capture (isolated world) | `src/content/capture.ts`   |
+| SPA hook (MAIN world)    | `src/content/spa-hook.ts`  |
+| Orchestrator             | `src/background/index.ts`  |
+| Durable queue            | `src/background/queue.ts`  |
+| API client               | `src/background/client.ts` |
+| Status poller / retry    | `src/background/poller.ts` |
+| Canonicalization         | `src/common/canonical.ts`  |
+| Exclusion rules          | `src/common/exclusions.ts` |
+| Settings                 | `src/common/settings.ts`   |
 | Popup / Options (Preact) | `src/popup`, `src/options` |

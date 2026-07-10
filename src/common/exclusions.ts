@@ -45,12 +45,7 @@ export const DEFAULT_SENSITIVE_DOMAINS: SensitiveDomain[] = [
   { category: 'adult', domain: 'onlyfans.com' },
 ];
 
-const LOCAL_HOST_EXACT = new Set([
-  'localhost',
-  '127.0.0.1',
-  '0.0.0.0',
-  '::1',
-]);
+const LOCAL_HOST_EXACT = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
 
 /** RFC-1918 / loopback / link-local / *.local hosts. */
 export function isLocalHost(host: string): boolean {

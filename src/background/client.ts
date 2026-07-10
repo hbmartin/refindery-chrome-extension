@@ -55,10 +55,7 @@ export async function isReady(baseUrl: string): Promise<boolean> {
 }
 
 /** POST /v1/pages — the core ingest call. Never throws; returns an outcome. */
-export async function postPage(
-  cfg: ServerConfig,
-  req: IngestPageRequest,
-): Promise<IngestOutcome> {
+export async function postPage(cfg: ServerConfig, req: IngestPageRequest): Promise<IngestOutcome> {
   let res: Response;
   try {
     res = await fetchWithTimeout(endpoint(cfg.baseUrl, '/v1/pages'), {
@@ -66,21 +63,20 @@ export async function postPage(
       headers: authHeaders(cfg.token),
       body: JSON.stringify(req),
     });
-  } catch (e) {
-    return { kind: 'network_error', message: String((e as Error)?.message ?? e) };
+  } catch (error) {
+    return {
+      kind: 'network_error',
+      message: error instanceof Error ? error.message : String(error),
+    };
   }
 
   if (res.status === 202) {
     const body = await safeJson(res);
-    return isAcceptedResponse(body)
-      ? { kind: 'accepted', body }
-      : malformedResponse(res.status);
+    return isAcceptedResponse(body) ? { kind: 'accepted', body } : malformedResponse(res.status);
   }
   if (res.status === 200) {
     const body = await safeJson(res);
-    return isRevisitResponse(body)
-      ? { kind: 'revisit', body }
-      : malformedResponse(res.status);
+    return isRevisitResponse(body) ? { kind: 'revisit', body } : malformedResponse(res.status);
   }
   if (res.status === 403) {
     const body = await safeJson(res);
@@ -126,10 +122,7 @@ export async function getStatus(
 }
 
 /** POST /v1/forget — destructive purge + blacklist. */
-export async function forget(
-  cfg: ServerConfig,
-  req: ForgetRequest,
-): Promise<ForgetResponse> {
+export async function forget(cfg: ServerConfig, req: ForgetRequest): Promise<ForgetResponse> {
   const res = await fetchWithTimeout(endpoint(cfg.baseUrl, '/v1/forget'), {
     method: 'POST',
     headers: authHeaders(cfg.token),
@@ -142,9 +135,7 @@ export async function forget(
 }
 
 /** GET /v1/blacklist */
-export async function listBlacklist(
-  cfg: ServerConfig,
-): Promise<BlacklistResponse> {
+export async function listBlacklist(cfg: ServerConfig): Promise<BlacklistResponse> {
   const res = await fetchWithTimeout(endpoint(cfg.baseUrl, '/v1/blacklist'), {
     headers: authHeaders(cfg.token),
   });
@@ -153,10 +144,7 @@ export async function listBlacklist(
 }
 
 /** DELETE /v1/blacklist/{id} → 204 */
-export async function deleteBlacklist(
-  cfg: ServerConfig,
-  id: string,
-): Promise<void> {
+export async function deleteBlacklist(cfg: ServerConfig, id: string): Promise<void> {
   const res = await fetchWithTimeout(
     endpoint(cfg.baseUrl, `/v1/blacklist/${encodeURIComponent(id)}`),
     { method: 'DELETE', headers: authHeaders(cfg.token) },
@@ -175,19 +163,15 @@ export async function listJobs(
   if (opts.status) params.set('status_filter', opts.status);
   if (opts.limit) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  const res = await fetchWithTimeout(
-    endpoint(cfg.baseUrl, `/v1/jobs${qs ? '?' + qs : ''}`),
-    { headers: authHeaders(cfg.token) },
-  );
+  const res = await fetchWithTimeout(endpoint(cfg.baseUrl, `/v1/jobs${qs ? '?' + qs : ''}`), {
+    headers: authHeaders(cfg.token),
+  });
   if (!res.ok) throw new Error(`jobs list failed: ${res.status}`);
   return res.json();
 }
 
 /** POST /v1/jobs/{id}/retry — only valid for dead jobs (409 otherwise). */
-export async function retryJob(
-  cfg: ServerConfig,
-  jobId: string,
-): Promise<JobRow> {
+export async function retryJob(cfg: ServerConfig, jobId: string): Promise<JobRow> {
   const res = await fetchWithTimeout(
     endpoint(cfg.baseUrl, `/v1/jobs/${encodeURIComponent(jobId)}/retry`),
     { method: 'POST', headers: authHeaders(cfg.token) },

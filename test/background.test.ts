@@ -38,18 +38,13 @@ vi.mock('@/background/notify', () => ({
   notifyServerDown: vi.fn(),
 }));
 
-import { getSettings } from '@/common/settings';
-import { isReady, postPage } from '@/background/client';
+import { getSettings, setSettings } from '@/common/settings';
+import { deleteBlacklist, forget, isReady, listBlacklist, postPage } from '@/background/client';
 import * as queue from '@/background/queue';
 import { notifyServerDown } from '@/background/notify';
-import { pollDue, retryDeadPage, trackPage } from '@/background/poller';
+import { pendingCount, pollDue, retryDeadPage, trackPage } from '@/background/poller';
 import { getRecent, updateBadge, upsertRecent } from '@/background/recent';
-import {
-  drainQueue,
-  handleMessage,
-  registerMessageListener,
-  tick,
-} from '@/background/index';
+import { drainQueue, handleMessage, registerMessageListener, tick } from '@/background/index';
 
 let storage: Record<string, unknown>;
 let messageListener: Parameters<typeof chrome.runtime.onMessage.addListener>[0] | undefined;
@@ -176,9 +171,7 @@ describe('drainQueue', () => {
 
     expect(storage.blocked403).toEqual(['example.com']);
     expect(queue.remove).toHaveBeenCalledWith('local-1');
-    expect(upsertRecent).toHaveBeenCalledWith(
-      expect.objectContaining({ state: 'blacklisted' }),
-    );
+    expect(upsertRecent).toHaveBeenCalledWith(expect.objectContaining({ state: 'blacklisted' }));
   });
 
   it('retries no_extraction once as URL-only, then records an error', async () => {
@@ -229,22 +222,20 @@ describe('drainQueue', () => {
     expect(storage.authError).toBe(true);
   });
 
-  it.each(['network_error', 'server_error'] as const)(
-    'backs off %s outcomes',
-    async (kind) => {
-      const queued = item();
-      vi.mocked(queue.due).mockResolvedValueOnce([queued]);
-      const outcome: IngestOutcome = kind === 'network_error'
+  it.each(['network_error', 'server_error'] as const)('backs off %s outcomes', async (kind) => {
+    const queued = item();
+    vi.mocked(queue.due).mockResolvedValueOnce([queued]);
+    const outcome: IngestOutcome =
+      kind === 'network_error'
         ? { kind, message: 'offline' }
         : { kind, httpStatus: 500, message: 'boom' };
-      vi.mocked(postPage).mockResolvedValueOnce(outcome);
+    vi.mocked(postPage).mockResolvedValueOnce(outcome);
 
-      expect(await drainQueue()).toBe(true);
-      expect(queued.attempts).toBe(1);
-      expect(queue.update).toHaveBeenCalledWith(queued);
-      expect(queue.remove).not.toHaveBeenCalled();
-    },
-  );
+    expect(await drainQueue()).toBe(true);
+    expect(queued.attempts).toBe(1);
+    expect(queue.update).toHaveBeenCalledWith(queued);
+    expect(queue.remove).not.toHaveBeenCalled();
+  });
 });
 
 describe('tick and message orchestration', () => {
@@ -292,9 +283,7 @@ describe('tick and message orchestration', () => {
 
   it('releases backoffs after an in-flight old-settings tick before retrying', async () => {
     const queued = item();
-    vi.mocked(queue.due)
-      .mockResolvedValueOnce([queued])
-      .mockResolvedValueOnce([queued]);
+    vi.mocked(queue.due).mockResolvedValueOnce([queued]).mockResolvedValueOnce([queued]);
     let resolvePost!: (outcome: IngestOutcome) => void;
     vi.mocked(postPage)
       .mockReturnValueOnce(
@@ -446,9 +435,9 @@ describe('tick and message orchestration', () => {
     ]);
     vi.mocked(retryDeadPage).mockResolvedValueOnce(true);
 
-    await expect(
-      handleMessage({ type: 'retryDead', localId: 'local-1' }, {}),
-    ).resolves.toEqual({ ok: true });
+    await expect(handleMessage({ type: 'retryDead', localId: 'local-1' }, {})).resolves.toEqual({
+      ok: true,
+    });
 
     expect(upsertRecent).toHaveBeenCalledWith({
       localId: 'local-1',
@@ -456,5 +445,95 @@ describe('tick and message orchestration', () => {
       lastError: null,
     });
     expect(trackPage).toHaveBeenCalledWith('local-1', 'page-1');
+  });
+
+  it('routes state reads, pause changes, and incognito capture checks', async () => {
+    vi.mocked(queue.count).mockResolvedValueOnce(2);
+    vi.mocked(pendingCount).mockResolvedValueOnce(1);
+
+    await expect(handleMessage({ type: 'getState' }, {})).resolves.toMatchObject({
+      queueCount: 2,
+      pending: 1,
+      authError: false,
+    });
+    await expect(handleMessage({ type: 'setPaused', paused: true }, {})).resolves.toEqual({
+      ok: true,
+    });
+    expect(setSettings).toHaveBeenCalledWith({ paused: true });
+
+    await expect(
+      handleMessage({ type: 'shouldCapture', url: 'https://example.com' }, {
+        tab: { incognito: true },
+      } as chrome.runtime.MessageSender),
+    ).resolves.toEqual({ capture: false, reason: 'incognito' });
+  });
+
+  it('routes forget and blacklist operations', async () => {
+    vi.mocked(forget).mockResolvedValueOnce({
+      blacklist_id: 'blacklist-1',
+      pattern: 'example.com',
+      kind: 'domain',
+      pages_purged: 2,
+      vector_deletes_queued: 2,
+    });
+    await expect(
+      handleMessage({ type: 'forgetDomain', domain: 'example.com', reason: 'test' }, {}),
+    ).resolves.toMatchObject({ ok: true });
+    expect(storage.blocked403).toEqual(['example.com']);
+
+    vi.mocked(forget).mockRejectedValueOnce(new Error('forget unavailable'));
+    await expect(
+      handleMessage({ type: 'forgetUrl', url: 'https://example.com/private' }, {}),
+    ).resolves.toEqual({ ok: false, error: 'forget unavailable' });
+
+    vi.mocked(listBlacklist).mockResolvedValueOnce({ entries: [] });
+    await expect(handleMessage({ type: 'listBlacklist' }, {})).resolves.toEqual({
+      ok: true,
+      entries: [],
+    });
+
+    vi.mocked(deleteBlacklist).mockResolvedValueOnce(undefined);
+    storage.blocked403 = ['example.com'];
+    await expect(
+      handleMessage({ type: 'deleteBlacklist', id: 'blacklist-1' }, {}),
+    ).resolves.toEqual({ ok: true });
+    expect(storage.blocked403).toEqual([]);
+  });
+
+  it('returns useful failures when configuration or upstream calls are unavailable', async () => {
+    vi.mocked(getSettings).mockResolvedValueOnce({ ...DEFAULT_SETTINGS, token: '' });
+    await expect(
+      handleMessage({ type: 'forgetDomain', domain: 'example.com' }, {}),
+    ).resolves.toEqual({ ok: false, error: 'not configured' });
+
+    vi.mocked(listBlacklist).mockRejectedValueOnce(new Error('unauthorized'));
+    await expect(handleMessage({ type: 'listBlacklist' }, {})).resolves.toEqual({
+      ok: false,
+      error: 'unauthorized',
+      entries: [],
+    });
+
+    vi.mocked(getRecent).mockResolvedValueOnce([]);
+    await expect(handleMessage({ type: 'retryDead', localId: 'missing' }, {})).resolves.toEqual({
+      ok: false,
+      error: 'no page id',
+    });
+  });
+
+  it('tests readiness and authentication independently', async () => {
+    vi.mocked(isReady).mockResolvedValueOnce(true);
+    vi.mocked(listBlacklist).mockResolvedValueOnce({ entries: [] });
+    await expect(handleMessage({ type: 'testConnection' }, {})).resolves.toEqual({
+      ready: true,
+      authOk: true,
+    });
+    expect(storage.authError).toBe(false);
+
+    vi.mocked(isReady).mockResolvedValueOnce(false);
+    vi.mocked(listBlacklist).mockRejectedValueOnce(new Error('unauthorized'));
+    await expect(handleMessage({ type: 'testConnection' }, {})).resolves.toEqual({
+      ready: false,
+      authOk: false,
+    });
   });
 });

@@ -1,0 +1,9 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "proseWrap": "preserve",
+  "semi": true,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "ignorePatterns": ["dist/**", "coverage/**", "reviews_triage/**", "triage_decisions.db"]
+}

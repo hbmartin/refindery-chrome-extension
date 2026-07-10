@@ -58,7 +58,7 @@ export async function getSettings(): Promise<Settings> {
   return {
     ...DEFAULT_SETTINGS,
     ...stored,
-    notify: { ...DEFAULT_SETTINGS.notify, ...(stored.notify ?? {}) },
+    notify: { ...DEFAULT_SETTINGS.notify, ...stored.notify },
   };
 }
 
@@ -67,7 +67,7 @@ export async function setSettings(patch: Partial<Settings>): Promise<Settings> {
   const next: Settings = {
     ...current,
     ...patch,
-    notify: { ...current.notify, ...(patch.notify ?? {}) },
+    notify: { ...current.notify, ...patch.notify },
   };
   await chrome.storage.local.set({ [SETTINGS_KEY]: next });
   return next;
@@ -76,7 +76,7 @@ export async function setSettings(patch: Partial<Settings>): Promise<Settings> {
 export function onSettingsChanged(cb: (s: Settings) => void): void {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes[SETTINGS_KEY]) {
-      getSettings().then(cb);
+      void getSettings().then(cb);
     }
   });
 }

@@ -29,6 +29,9 @@ const now = () => new Date().toISOString();
 function canonical(url) {
   try {
     const u = new URL(url);
+    // Snapshot keys because deleting from URLSearchParams during live iteration
+    // can skip adjacent tracking parameters.
+    // oxlint-disable-next-line unicorn/no-useless-spread
     for (const k of [...u.searchParams.keys()]) {
       if (/^utm_/i.test(k) || ['fbclid', 'gclid', 'ref', 'si'].includes(k.toLowerCase())) {
         u.searchParams.delete(k);
@@ -60,7 +63,10 @@ function isBlacklisted(url) {
 }
 
 function hash(s) {
-  return crypto.createHash('sha256').update(s || '').digest('hex');
+  return crypto
+    .createHash('sha256')
+    .update(s || '')
+    .digest('hex');
 }
 
 function send(res, code, body) {
@@ -145,7 +151,8 @@ const server = http.createServer(async (req, res) => {
         page_id: existing.page_id,
         status: statusOf(existing),
         revisit: true,
-        content_hash_differs: Boolean(body.body_html || body.body_extracted) && contentHash !== existing._contentHash,
+        content_hash_differs:
+          Boolean(body.body_html || body.body_extracted) && contentHash !== existing._contentHash,
       });
     }
 
@@ -199,7 +206,9 @@ const server = http.createServer(async (req, res) => {
       page_id: page.page_id,
       status: st,
       last_error: st === 'dead' ? page._lastError : null,
-      features: { entities: { status: st === 'indexed' ? 'done' : 'not_queued', last_error: null } },
+      features: {
+        entities: { status: st === 'indexed' ? 'done' : 'not_queued', last_error: null },
+      },
     });
   }
 
@@ -212,14 +221,7 @@ const server = http.createServer(async (req, res) => {
     // Mock-only shortcut: lazily backfill indexed_at on first read since this
     // server has no real indexing pipeline that would stamp it.
     if (status === 'indexed' && page.indexed_at == null) page.indexed_at = now();
-    const {
-      _contentHash,
-      _createdMs,
-      _willDie,
-      _status,
-      _lastError,
-      ...pageOut
-    } = page;
+    const { _contentHash, _createdMs, _willDie, _status, _lastError, ...pageOut } = page;
     return send(res, 200, { ...pageOut, status });
   }
 
@@ -228,14 +230,24 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req);
     const hasUrl = !!body?.url;
     const hasDomain = !!body?.domain;
-    if (hasUrl === hasDomain) return send(res, 422, { detail: 'provide exactly one of url or domain' });
+    if (hasUrl === hasDomain)
+      return send(res, 422, { detail: 'provide exactly one of url or domain' });
     const kind = hasUrl ? 'url' : 'domain';
     const pattern = hasUrl ? canonical(body.url) : body.domain;
-    const entry = { id: 'bl_' + crypto.randomBytes(5).toString('hex'), pattern, kind, reason: body.reason ?? null, created_at: now() };
+    const entry = {
+      id: 'bl_' + crypto.randomBytes(5).toString('hex'),
+      pattern,
+      kind,
+      reason: body.reason ?? null,
+      created_at: now(),
+    };
     blacklist.unshift(entry);
     let purged = 0;
-    for (const [canon, p] of [...pages.entries()]) {
-      const match = kind === 'domain' ? p.domain === pattern || p.domain.endsWith('.' + pattern) : canon === pattern;
+    for (const [canon, p] of pages.entries()) {
+      const match =
+        kind === 'domain'
+          ? p.domain === pattern || p.domain.endsWith('.' + pattern)
+          : canon === pattern;
       if (match) {
         pages.delete(canon);
         purged++;

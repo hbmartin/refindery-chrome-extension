@@ -12,13 +12,7 @@ import { canonicalKey, domainOf, hostOf } from '@/common/canonical';
 import { decideSkip, hostMatchesDomain } from '@/common/exclusions';
 import { sendBackoffMs } from '@/common/backoff';
 import type { ServerConfig } from './client';
-import {
-  deleteBlacklist,
-  forget,
-  isReady,
-  listBlacklist,
-  postPage,
-} from './client';
+import { deleteBlacklist, forget, isReady, listBlacklist, postPage } from './client';
 import * as queue from './queue';
 import { pollDue, pendingCount, trackPage, retryDeadPage } from './poller';
 import { getRecent, upsertRecent, updateBadge } from './recent';
@@ -29,6 +23,10 @@ const MAINTENANCE_ALARM = 'maintenance';
 const DRAIN_BATCH = 10;
 const RELEASE_BACKOFFS_REQUEST_KEY = 'releaseBackoffsRequest';
 const RELEASE_BACKOFFS_HANDLED_KEY = 'releaseBackoffsHandled';
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 // ── Cooldown (per canonical URL) ─────────────────────────────────────────
 
@@ -77,9 +75,7 @@ async function isBlocked(url: string): Promise<boolean> {
   const host = hostOf(url);
   if (!host) return false;
   const patterns = await getBlockedPatterns();
-  return patterns.some(
-    (p) => hostMatchesDomain(host, p) || url.startsWith(p),
-  );
+  return patterns.some((p) => hostMatchesDomain(host, p) || url.startsWith(p));
 }
 
 // ── Auth-error flag (drives the badge "!" state) ─────────────────────────
@@ -338,17 +334,15 @@ function scheduleTick(): void {
 // ── Message routing ────────────────────────────────────────────────────────
 
 export function registerMessageListener(): void {
-  chrome.runtime.onMessage.addListener(
-    (msg: RuntimeMessage, sender, sendResponse) => {
-      void handleMessage(msg, sender).then(sendResponse, (error: unknown) => {
-        sendResponse({
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+  chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse) => {
+    void handleMessage(msg, sender).then(sendResponse, (error: unknown) => {
+      sendResponse({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
       });
-      return true; // async
-    },
-  );
+    });
+    return true; // async
+  });
 }
 
 export async function handleMessage(
@@ -399,8 +393,8 @@ export async function handleMessage(
         const res = await forget(cfg, { domain: msg.domain, reason: msg.reason });
         await addBlockedPattern(res.pattern);
         return { ok: true, result: res };
-      } catch (e) {
-        return { ok: false, error: String((e as Error).message) };
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
       }
     }
     case 'forgetUrl': {
@@ -410,8 +404,8 @@ export async function handleMessage(
         const res = await forget(cfg, { url: msg.url, reason: msg.reason });
         await addBlockedPattern(res.pattern);
         return { ok: true, result: res };
-      } catch (e) {
-        return { ok: false, error: String((e as Error).message) };
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
       }
     }
     case 'listBlacklist': {
@@ -420,8 +414,8 @@ export async function handleMessage(
       try {
         const res = await listBlacklist(cfg);
         return { ok: true, entries: res.entries };
-      } catch (e) {
-        return { ok: false, error: String((e as Error).message), entries: [] };
+      } catch (error) {
+        return { ok: false, error: errorMessage(error), entries: [] };
       }
     }
     case 'deleteBlacklist': {
@@ -433,8 +427,8 @@ export async function handleMessage(
         // targets can be captured again.
         await chrome.storage.local.set({ [BLOCKED_KEY]: [] });
         return { ok: true };
-      } catch (e) {
-        return { ok: false, error: String((e as Error).message) };
+      } catch (error) {
+        return { ok: false, error: errorMessage(error) };
       }
     }
     case 'retryDead': {
@@ -476,18 +470,20 @@ export async function handleMessage(
       return { ok: true };
     }
   }
+
+  return undefined;
 }
 
 // ── Lifecycle wiring ────────────────────────────────────────────────────────
 
 export function registerLifecycleListeners(): void {
   chrome.runtime.onInstalled.addListener(() => {
-    chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+    void chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
     scheduleTick();
   });
 
   chrome.runtime.onStartup.addListener(() => {
-    chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
+    void chrome.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
     scheduleTick();
   });
 

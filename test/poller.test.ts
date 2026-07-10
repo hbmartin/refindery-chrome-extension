@@ -50,9 +50,7 @@ describe('pending poll serialization', () => {
   });
 
   it('does not lose a page tracked while pollDue is running', async () => {
-    storage.pending = [
-      { localId: 'local-1', pageId: 'page-1', pollCount: 0, nextPollAt: 0 },
-    ];
+    storage.pending = [{ localId: 'local-1', pageId: 'page-1', pollCount: 0, nextPollAt: 0 }];
     let resolveStatus!: (status: PageStatusResponse | null) => void;
     vi.mocked(getStatus).mockReturnValueOnce(
       new Promise<PageStatusResponse | null>((resolve) => {
@@ -79,9 +77,7 @@ describe('pending poll serialization', () => {
   });
 
   it('preserves a retry tracked while a terminal poll is finishing', async () => {
-    storage.pending = [
-      { localId: 'local-1', pageId: 'page-1', pollCount: 2, nextPollAt: 0 },
-    ];
+    storage.pending = [{ localId: 'local-1', pageId: 'page-1', pollCount: 2, nextPollAt: 0 }];
     vi.mocked(getStatus).mockResolvedValueOnce({
       page_id: 'page-1',
       status: 'dead',
@@ -112,9 +108,7 @@ describe('pending poll serialization', () => {
   });
 
   it('clears stale errors while a page is still indexing', async () => {
-    storage.pending = [
-      { localId: 'local-1', pageId: 'page-1', pollCount: 0, nextPollAt: 0 },
-    ];
+    storage.pending = [{ localId: 'local-1', pageId: 'page-1', pollCount: 0, nextPollAt: 0 }];
     vi.mocked(getStatus).mockResolvedValueOnce({
       page_id: 'page-1',
       status: 'indexing',

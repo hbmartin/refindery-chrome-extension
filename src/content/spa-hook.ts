@@ -10,10 +10,7 @@
 
   for (const type of ['pushState', 'replaceState'] as const) {
     const orig = history[type];
-    history[type] = function (
-      this: History,
-      ...args: Parameters<History['pushState']>
-    ) {
+    history[type] = function (this: History, ...args: Parameters<History['pushState']>) {
       const result = orig.apply(this, args);
       notify();
       return result;
