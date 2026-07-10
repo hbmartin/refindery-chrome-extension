@@ -46,6 +46,30 @@ describe('content capture — sensitive + manual', () => {
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'shouldCapture' }));
   });
 
+  it('does not capture when a visible password field is inside an open shadow root', async () => {
+    primeArticleDom();
+    const host = document.createElement('div');
+    const shadow = host.attachShadow({ mode: 'open' });
+    const pw = document.createElement('input');
+    pw.type = 'password';
+    pw.getClientRects = () => [{ width: 5, height: 5 }] as unknown as DOMRectList;
+    shadow.appendChild(pw);
+    document.body.appendChild(host);
+
+    const sendMessage = vi.fn(async (m: { type: string }) =>
+      m.type === 'shouldCapture' ? { capture: true } : { ok: true },
+    );
+    vi.stubGlobal('chrome', {
+      runtime: { sendMessage, onMessage: { addListener: vi.fn() } },
+    });
+
+    await import('@/content/capture');
+    await vi.advanceTimersByTimeAsync(700);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'shouldCapture' }));
+  });
+
   it('captures on demand (manual) when the popup relays captureNow', async () => {
     primeArticleDom();
     let listener: Listener | undefined;

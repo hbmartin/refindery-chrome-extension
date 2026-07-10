@@ -590,27 +590,31 @@ async function runMaintenance(): Promise<void> {
   scheduleTick();
 }
 
-function ensureContextMenu(): void {
+export async function ensureContextMenu(): Promise<void> {
+  if (!browserApi.contextMenus) return;
   // removeAll first so onInstalled/onStartup don't create duplicate entries.
-  browserApi.contextMenus.removeAll(() => {
-    browserApi.contextMenus.create({
-      id: CONTEXT_MENU_ID,
-      title: 'Capture this page for Refindery',
-      contexts: ['page'],
-    });
+  await Promise.resolve(browserApi.contextMenus.removeAll());
+  browserApi.contextMenus.create({
+    id: CONTEXT_MENU_ID,
+    title: 'Capture this page for Refindery',
+    contexts: ['page'],
   });
 }
 
 export function registerLifecycleListeners(): void {
   browserApi.runtime.onInstalled.addListener(() => {
     void browserApi.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
-    ensureContextMenu();
+    void ensureContextMenu().catch((error: unknown) => {
+      console.error('Refindery context menu setup failed', error);
+    });
     scheduleTick();
   });
 
   browserApi.runtime.onStartup.addListener(() => {
     void browserApi.alarms.create(MAINTENANCE_ALARM, { periodInMinutes: 1 });
-    ensureContextMenu();
+    void ensureContextMenu().catch((error: unknown) => {
+      console.error('Refindery context menu setup failed', error);
+    });
     scheduleTick();
   });
 
@@ -621,12 +625,16 @@ export function registerLifecycleListeners(): void {
 
 // Keyboard command + context-menu entry both funnel through triggerManualCapture.
 export function registerManualCaptureTriggers(): void {
-  browserApi.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === CONTEXT_MENU_ID) void triggerManualCapture(tab?.id);
-  });
-  browserApi.commands.onCommand.addListener((command) => {
-    if (command === CAPTURE_COMMAND) void triggerManualCapture();
-  });
+  if (browserApi.contextMenus) {
+    browserApi.contextMenus.onClicked.addListener((info, tab) => {
+      if (info.menuItemId === CONTEXT_MENU_ID) void triggerManualCapture(tab?.id);
+    });
+  }
+  if (browserApi.commands) {
+    browserApi.commands.onCommand.addListener((command) => {
+      if (command === CAPTURE_COMMAND) void triggerManualCapture();
+    });
+  }
 }
 
 if (import.meta.env.MODE !== 'test') {
