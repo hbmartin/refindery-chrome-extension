@@ -44,7 +44,14 @@ import * as queue from '@/background/queue';
 import { notifyServerDown } from '@/background/notify';
 import { pendingCount, pollDue, retryDeadPage, trackPage } from '@/background/poller';
 import { getRecent, updateBadge, upsertRecent } from '@/background/recent';
-import { drainQueue, handleMessage, registerMessageListener, tick } from '@/background/index';
+import {
+  drainQueue,
+  ensureContextMenu,
+  handleMessage,
+  registerManualCaptureTriggers,
+  registerMessageListener,
+  tick,
+} from '@/background/index';
 
 let storage: Record<string, unknown>;
 let messageListener: Parameters<typeof chrome.runtime.onMessage.addListener>[0] | undefined;
@@ -111,6 +118,43 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe('context menu setup', () => {
+  it('does nothing when context menus are unavailable', async () => {
+    vi.stubGlobal('browser', {});
+
+    await expect(ensureContextMenu()).resolves.toBeUndefined();
+  });
+
+  it('waits for promise-based removal before creating the menu', async () => {
+    const events: string[] = [];
+    vi.stubGlobal('browser', {
+      contextMenus: {
+        removeAll: vi.fn(async () => {
+          events.push('removed');
+        }),
+        create: vi.fn(() => {
+          events.push('created');
+          return 'refindery-capture-now';
+        }),
+      },
+    });
+
+    await ensureContextMenu();
+
+    expect(events).toEqual(['removed', 'created']);
+  });
+
+  it('registers only the manual-capture APIs available on the platform', () => {
+    const addCommandListener = vi.fn();
+    vi.stubGlobal('browser', {
+      commands: { onCommand: { addListener: addCommandListener } },
+    });
+
+    expect(() => registerManualCaptureTriggers()).not.toThrow();
+    expect(addCommandListener).toHaveBeenCalledOnce();
+  });
 });
 
 describe('drainQueue', () => {

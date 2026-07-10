@@ -39,12 +39,15 @@ function faviconUrl(): string | null {
 // A visible password field is a strong signal that the page is a login / auth
 // surface even when its domain isn't on the sensitive list. Skipping these is a
 // privacy-safety default that applies even to explicit manual captures.
-function hasVisiblePasswordField(): boolean {
-  const fields = document.querySelectorAll<HTMLInputElement>('input[type="password"]');
+function hasVisiblePasswordField(root: Document | ShadowRoot = document): boolean {
+  const fields = root.querySelectorAll<HTMLInputElement>('input[type="password"]');
   for (const el of fields) {
     // offsetParent is null for display:none (and for position:fixed, which may
     // still be visible) — fall back to client rects to catch the fixed case.
     if (el.offsetParent !== null || el.getClientRects().length > 0) return true;
+  }
+  for (const el of root.querySelectorAll('*')) {
+    if (el.shadowRoot && hasVisiblePasswordField(el.shadowRoot)) return true;
   }
   return false;
 }

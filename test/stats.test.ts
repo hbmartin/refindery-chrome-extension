@@ -3,7 +3,10 @@ import { getStats, recordCapture } from '@/background/stats';
 import type { CaptureStats } from '@/common/types';
 
 let storage: Record<string, unknown>;
-const today = new Date().toLocaleDateString('en-CA');
+const now = new Date();
+const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+  now.getDate(),
+).padStart(2, '0')}`;
 
 beforeEach(() => {
   storage = {};
@@ -20,10 +23,17 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
 describe('capture stats', () => {
+  it('formats the local day without relying on locale output', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 0, 2, 12));
+    expect(await getStats()).toEqual({ total: 0, today: 0, day: '2026-01-02' });
+  });
+
   it('starts from zero for the current day', async () => {
     expect(await getStats()).toEqual({ total: 0, today: 0, day: today });
   });

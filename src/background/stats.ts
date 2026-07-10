@@ -10,9 +10,13 @@ import { createMutex } from '@/common/mutex';
 const STATS_KEY = 'captureStats';
 const statsMutex = createMutex();
 
-/** Local calendar day as YYYY-MM-DD (en-CA formats exactly that way). */
+/** Local calendar day as YYYY-MM-DD, independent of runtime locale data. */
 function todayKey(): string {
-  return new Date().toLocaleDateString('en-CA');
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export async function getStats(): Promise<CaptureStats> {
