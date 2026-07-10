@@ -329,6 +329,16 @@ describe('tick and message orchestration', () => {
     });
   });
 
+  it('does not claim the response channel for unknown messages', async () => {
+    registerMessageListener();
+    const sendResponse = vi.fn();
+
+    expect(messageListener?.({ type: 'unrelatedMessage' }, {}, sendResponse)).toBe(false);
+    await Promise.resolve();
+
+    expect(sendResponse).not.toHaveBeenCalled();
+  });
+
   it('releases queue backoffs when settings change', async () => {
     await expect(handleMessage({ type: 'settingsChanged' }, {})).resolves.toEqual({
       ok: true,

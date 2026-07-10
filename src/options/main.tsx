@@ -82,8 +82,11 @@ function Options() {
   };
 
   const addRule = () => {
-    if (!newRule.pattern.trim()) return;
-    patch({ userSkipRules: [...s.userSkipRules, { ...newRule, pattern: newRule.pattern.trim() }] });
+    const pattern = newRule.pattern.trim();
+    if (!pattern) return;
+    // De-dupe so two identical rules can't collide on the `kind:pattern` render key.
+    const exists = s.userSkipRules.some((r) => r.kind === newRule.kind && r.pattern === pattern);
+    if (!exists) patch({ userSkipRules: [...s.userSkipRules, { ...newRule, pattern }] });
     setNewRule({ pattern: '', kind: 'domain' });
   };
 

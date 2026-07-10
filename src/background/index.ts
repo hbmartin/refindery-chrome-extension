@@ -28,6 +28,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function assertNever(value: never): never {
+  throw new Error(`Unhandled runtime message: ${JSON.stringify(value)}`);
+}
+
 // ── Cooldown (per canonical URL) ─────────────────────────────────────────
 
 const COOLDOWN_KEY = 'cooldown';
@@ -333,8 +337,29 @@ function scheduleTick(): void {
 
 // ── Message routing ────────────────────────────────────────────────────────
 
+const RUNTIME_MESSAGE_TYPES = {
+  shouldCapture: true,
+  capture: true,
+  getState: true,
+  setPaused: true,
+  forgetDomain: true,
+  forgetUrl: true,
+  listBlacklist: true,
+  deleteBlacklist: true,
+  retryDead: true,
+  testConnection: true,
+  settingsChanged: true,
+} satisfies Record<RuntimeMessage['type'], true>;
+
+function isRuntimeMessage(msg: unknown): msg is RuntimeMessage {
+  if (typeof msg !== 'object' || msg === null || !('type' in msg)) return false;
+  return Object.hasOwn(RUNTIME_MESSAGE_TYPES, (msg as { type: unknown }).type as PropertyKey);
+}
+
 export function registerMessageListener(): void {
-  chrome.runtime.onMessage.addListener((msg: RuntimeMessage, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg: unknown, sender, sendResponse) => {
+    if (!isRuntimeMessage(msg)) return false;
+
     void handleMessage(msg, sender).then(sendResponse, (error: unknown) => {
       sendResponse({
         ok: false,
@@ -469,9 +494,11 @@ export async function handleMessage(
       scheduleTick();
       return { ok: true };
     }
+    default:
+      // Exhaustiveness guard: every RuntimeMessage variant is handled above, so
+      // adding a new one without a case here becomes a compile error.
+      return assertNever(msg);
   }
-
-  return undefined;
 }
 
 // ── Lifecycle wiring ────────────────────────────────────────────────────────
