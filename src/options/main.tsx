@@ -12,9 +12,7 @@ import {
 import { DEFAULT_SENSITIVE_DOMAINS } from '@/common/exclusions';
 import type { BlacklistEntry } from '@/common/types';
 
-const CATEGORIES = Array.from(
-  new Set(DEFAULT_SENSITIVE_DOMAINS.map((d) => d.category)),
-);
+const CATEGORIES = Array.from(new Set(DEFAULT_SENSITIVE_DOMAINS.map((d) => d.category)));
 
 async function ensureHostPermission(baseUrl: string): Promise<boolean> {
   try {
@@ -26,6 +24,13 @@ async function ensureHostPermission(baseUrl: string): Promise<boolean> {
   }
 }
 
+async function fetchBlacklist(): Promise<BlacklistEntry[]> {
+  const res = await send<{ ok: boolean; entries: BlacklistEntry[] }>({
+    type: 'listBlacklist',
+  });
+  return res.entries ?? [];
+}
+
 function Options() {
   const [s, setS] = useState<Settings | null>(null);
   const [saved, setSaved] = useState<string>('');
@@ -35,17 +40,14 @@ function Options() {
   const [forgetInput, setForgetInput] = useState('');
   const [cooldownInput, setCooldownInput] = useState<string | null>(null);
 
-  useEffect(() => {
-    getSettings().then(setS);
-    void loadBlacklist();
-  }, []);
-
   const loadBlacklist = async () => {
-    const res = await send<{ ok: boolean; entries: BlacklistEntry[] }>({
-      type: 'listBlacklist',
-    });
-    setBlacklist(res.entries ?? []);
+    setBlacklist(await fetchBlacklist());
   };
+
+  useEffect(() => {
+    void getSettings().then(setS);
+    void fetchBlacklist().then(setBlacklist);
+  }, []);
 
   const patch = (p: Partial<Settings>) => setS((prev) => (prev ? { ...prev, ...p } : prev));
 
@@ -68,10 +70,7 @@ function Options() {
     setConn(await send({ type: 'testConnection' }));
   };
 
-  const cooldownHours = useMemo(
-    () => (s ? Math.round(s.cooldownMs / 3600000) : 24),
-    [s],
-  );
+  const cooldownHours = useMemo(() => (s ? Math.round(s.cooldownMs / 3600000) : 24), [s]);
 
   if (!s) return <div class="options">Loading…</div>;
 
@@ -138,14 +137,15 @@ function Options() {
           />
         </label>
         <div class="inline">
-          <button class="primary" onClick={save}>Save</button>
+          <button class="primary" onClick={save}>
+            Save
+          </button>
           <button onClick={test}>Test connection</button>
           <span class="status-line">{saved}</span>
         </div>
         {conn && (
           <div class="status-line">
-            Ready:{' '}
-            <span class={conn.ready ? 'ok-text' : 'err-text'}>{String(conn.ready)}</span>
+            Ready: <span class={conn.ready ? 'ok-text' : 'err-text'}>{String(conn.ready)}</span>
             {'  ·  '}Auth:{' '}
             <span class={conn.authOk ? 'ok-text' : 'err-text'}>{String(conn.authOk)}</span>
           </div>
@@ -188,7 +188,9 @@ function Options() {
           <span>Pause all auto-capture</span>
         </label>
         <div class="inline" style="margin-top:10px">
-          <button class="primary" onClick={save}>Save</button>
+          <button class="primary" onClick={save}>
+            Save
+          </button>
         </div>
       </div>
 
@@ -198,7 +200,9 @@ function Options() {
           <input
             type="checkbox"
             checked={s.notify.onDead}
-            onChange={(e) => patch({ notify: { ...s.notify, onDead: (e.target as HTMLInputElement).checked } })}
+            onChange={(e) =>
+              patch({ notify: { ...s.notify, onDead: (e.target as HTMLInputElement).checked } })
+            }
           />
           <span>Notify when a page fails to index (dead)</span>
         </label>
@@ -206,18 +210,27 @@ function Options() {
           <input
             type="checkbox"
             checked={s.notify.onServerDown}
-            onChange={(e) => patch({ notify: { ...s.notify, onServerDown: (e.target as HTMLInputElement).checked } })}
+            onChange={(e) =>
+              patch({
+                notify: { ...s.notify, onServerDown: (e.target as HTMLInputElement).checked },
+              })
+            }
           />
           <span>Notify when the server is unreachable</span>
         </label>
         <div class="inline" style="margin-top:10px">
-          <button class="primary" onClick={save}>Save</button>
+          <button class="primary" onClick={save}>
+            Save
+          </button>
         </div>
       </div>
 
       <div class="section">
         <h2>Privacy exclusions (local — never sent)</h2>
-        <p class="small muted">Default sensitive-category domains are skipped before anything is sent. Turn a category off to allow capturing those sites.</p>
+        <p class="small muted">
+          Default sensitive-category domains are skipped before anything is sent. Turn a category
+          off to allow capturing those sites.
+        </p>
         {CATEGORIES.map((cat) => (
           <label class="inline mb" key={cat}>
             <input
@@ -232,17 +245,24 @@ function Options() {
         <h3 style="font-size:13px;margin:14px 0 6px">Your skip rules</h3>
         {s.userSkipRules.length === 0 && <div class="small muted">No custom rules.</div>}
         {s.userSkipRules.map((r, i) => (
-          <div class="list-item" key={i}>
+          <div class="list-item" key={`${r.kind}:${r.pattern}`}>
             <span>
               <span class="tag">{r.kind}</span> {r.pattern}
             </span>
-            <button class="danger" onClick={() => removeRule(i)}>Remove</button>
+            <button class="danger" onClick={() => removeRule(i)}>
+              Remove
+            </button>
           </div>
         ))}
         <div class="inline" style="margin-top:10px">
           <select
             value={newRule.kind}
-            onChange={(e) => setNewRule({ ...newRule, kind: (e.target as HTMLSelectElement).value as 'domain' | 'url' })}
+            onChange={(e) =>
+              setNewRule({
+                ...newRule,
+                kind: (e.target as HTMLSelectElement).value as 'domain' | 'url',
+              })
+            }
           >
             <option value="domain">domain</option>
             <option value="url">url glob</option>
@@ -250,18 +270,27 @@ function Options() {
           <input
             type="text"
             style="flex:1"
-            placeholder={newRule.kind === 'domain' ? 'example.com' : 'https://example.com/private/*'}
+            placeholder={
+              newRule.kind === 'domain' ? 'example.com' : 'https://example.com/private/*'
+            }
             value={newRule.pattern}
-            onInput={(e) => setNewRule({ ...newRule, pattern: (e.target as HTMLInputElement).value })}
+            onInput={(e) =>
+              setNewRule({ ...newRule, pattern: (e.target as HTMLInputElement).value })
+            }
           />
           <button onClick={addRule}>Add</button>
-          <button class="primary" onClick={save}>Save</button>
+          <button class="primary" onClick={save}>
+            Save
+          </button>
         </div>
       </div>
 
       <div class="section">
         <h2>Server blacklist (destructive forget)</h2>
-        <p class="small muted">Purges matching pages from Refindery and blocks future ingests. Irreversible — removing a rule later does not restore purged content.</p>
+        <p class="small muted">
+          Purges matching pages from Refindery and blocks future ingests. Irreversible — removing a
+          rule later does not restore purged content.
+        </p>
         <div class="inline mb">
           <input
             type="text"
@@ -270,7 +299,9 @@ function Options() {
             value={forgetInput}
             onInput={(e) => setForgetInput((e.target as HTMLInputElement).value)}
           />
-          <button class="danger" onClick={doForget}>Forget</button>
+          <button class="danger" onClick={doForget}>
+            Forget
+          </button>
         </div>
         {blacklist.length === 0 && <div class="small muted">No blacklist rules.</div>}
         {blacklist.map((b) => (

@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  decideSkip,
-  isLocalHost,
-  hostMatchesDomain,
-  urlMatchesGlob,
-} from '@/common/exclusions';
+import { decideSkip, isLocalHost, hostMatchesDomain, urlMatchesGlob } from '@/common/exclusions';
 import { DEFAULT_SETTINGS, type Settings } from '@/common/settings';
 
 const base: Settings = { ...DEFAULT_SETTINGS };
@@ -16,7 +11,15 @@ const ctx = (over: Partial<Settings> = {}) => ({
 
 describe('isLocalHost', () => {
   it('flags loopback and private ranges', () => {
-    for (const h of ['localhost', '127.0.0.1', '10.0.0.5', '192.168.1.2', '172.16.4.4', '169.254.1.1', 'foo.local']) {
+    for (const h of [
+      'localhost',
+      '127.0.0.1',
+      '10.0.0.5',
+      '192.168.1.2',
+      '172.16.4.4',
+      '169.254.1.1',
+      'foo.local',
+    ]) {
       expect(isLocalHost(h)).toBe(true);
     }
   });
@@ -48,7 +51,9 @@ describe('decideSkip', () => {
     expect(decideSkip('https://example.com', { ...ctx(), paused: true }).skip).toBe(true);
   });
   it('skips incognito', () => {
-    expect(decideSkip('https://example.com', { ...ctx(), incognito: true }).reason).toBe('incognito');
+    expect(decideSkip('https://example.com', { ...ctx(), incognito: true }).reason).toBe(
+      'incognito',
+    );
   });
   it('skips non-web schemes and local hosts', () => {
     expect(decideSkip('chrome://settings', ctx()).reason).toBe('non-web-scheme');
@@ -64,7 +69,10 @@ describe('decideSkip', () => {
     expect(d.skip).toBe(false);
   });
   it('applies user skip rules', () => {
-    const d = decideSkip('https://blocked.com/x', ctx({ userSkipRules: [{ pattern: 'blocked.com', kind: 'domain' }] }));
+    const d = decideSkip(
+      'https://blocked.com/x',
+      ctx({ userSkipRules: [{ pattern: 'blocked.com', kind: 'domain' }] }),
+    );
     expect(d.reason).toBe('user-rule:blocked.com');
   });
   it('allows ordinary public pages', () => {

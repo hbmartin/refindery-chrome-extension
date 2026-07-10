@@ -2,6 +2,14 @@
 
 import { afterAll, describe, expect, it, vi } from 'vitest';
 
+const locationChange = () =>
+  window.dispatchEvent(
+    new MessageEvent('message', {
+      source: window,
+      data: { source: 'refindery', kind: 'locationchange' },
+    }),
+  );
+
 describe('capture navigation messages', () => {
   afterAll(() => {
     vi.useRealTimers();
@@ -24,14 +32,6 @@ describe('capture navigation messages', () => {
     await import('@/content/capture');
     await vi.advanceTimersByTimeAsync(700);
     expect(sendMessage).toHaveBeenCalledTimes(2);
-
-    const locationChange = () =>
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          source: window,
-          data: { source: 'refindery', kind: 'locationchange' },
-        }),
-      );
 
     locationChange();
     await vi.advanceTimersByTimeAsync(700);

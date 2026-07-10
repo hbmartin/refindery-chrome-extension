@@ -111,12 +111,11 @@ export async function pollDue(cfg: ServerConfig): Promise<boolean> {
   return withPendingLock(async () => {
     // Re-read and merge so pages tracked while requests were in flight survive.
     const merged = (await getPending())
-      .map((existing) =>
-        due.find(
-          (d) =>
-            d.localId === existing.localId &&
-            (d.revision ?? 0) === (existing.revision ?? 0),
-        ) ?? existing,
+      .map(
+        (existing) =>
+          due.find(
+            (d) => d.localId === existing.localId && (d.revision ?? 0) === (existing.revision ?? 0),
+          ) ?? existing,
       )
       .filter((p) => p.pollCount !== -1);
     await setPending(merged);
@@ -128,10 +127,7 @@ export async function pollDue(cfg: ServerConfig): Promise<boolean> {
  * Retry a dead page: find its dead indexing job via the jobs ledger and
  * re-enqueue it. Returns true if a retry was issued.
  */
-export async function retryDeadPage(
-  cfg: ServerConfig,
-  pageId: string,
-): Promise<boolean> {
+export async function retryDeadPage(cfg: ServerConfig, pageId: string): Promise<boolean> {
   const { jobs } = await listJobs(cfg, { status: 'dead', limit: 100 });
   const job = jobs.find((j) => j.page_id === pageId);
   if (!job) return false;

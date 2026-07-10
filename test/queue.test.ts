@@ -105,8 +105,6 @@ describe('queue', () => {
     expect(transaction).toHaveBeenCalledTimes(1);
     transaction.mockRestore();
 
-    expect((await queue.due(Date.now(), 10)).map((i) => i.id).sort()).toEqual(
-      [a.id, b.id].sort(),
-    );
+    expect((await queue.due(Date.now(), 10)).map((i) => i.id).sort()).toEqual([a.id, b.id].sort());
   });
 });

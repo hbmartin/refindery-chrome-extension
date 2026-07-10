@@ -20,12 +20,7 @@ interface MessageFailure {
 }
 
 function unwrapMessage<T>(reply: T | MessageFailure): T {
-  if (
-    typeof reply === 'object' &&
-    reply !== null &&
-    'ok' in reply &&
-    reply.ok === false
-  ) {
+  if (typeof reply === 'object' && reply !== null && 'ok' in reply && !reply.ok) {
     throw new Error(reply.error ?? 'Background request failed');
   }
   return reply as T;
@@ -87,9 +82,7 @@ function Popup() {
     if (!tabDomain) return;
     setBusy(true);
     try {
-      const reply = await send<
-        { ok: true; result?: { pages_purged?: number } } | MessageFailure
-      >({
+      const reply = await send<{ ok: true; result?: { pages_purged?: number } } | MessageFailure>({
         type: 'forgetDomain',
         domain: tabDomain,
         reason: 'user requested from popup',
@@ -134,13 +127,14 @@ function Popup() {
       : conn.ready && conn.authOk
         ? 'ok'
         : 'warn';
-  const statusText = state.authError || conn?.authOk === false
-    ? 'Bad token — check Options'
-    : conn?.ready
-      ? 'Server ready'
-      : settings.token
-        ? 'Server unreachable — captures are queued'
-        : 'Not configured — open Options';
+  const statusText =
+    state.authError || conn?.authOk === false
+      ? 'Bad token — check Options'
+      : conn?.ready
+        ? 'Server ready'
+        : settings.token
+          ? 'Server unreachable — captures are queued'
+          : 'Not configured — open Options';
 
   return (
     <div class="popup">
@@ -148,7 +142,11 @@ function Popup() {
         <h1>
           <span class={`dot ${statusDot}`} /> Refindery
         </h1>
-        <label class="switch" title={settings.paused ? 'Paused' : 'Capturing'}>
+        <label
+          class="switch"
+          title={settings.paused ? 'Paused' : 'Capturing'}
+          aria-label="Toggle automatic capture"
+        >
           <input
             type="checkbox"
             checked={!settings.paused}
@@ -161,8 +159,12 @@ function Popup() {
         {settings.paused ? 'Auto-capture paused' : 'Auto-capturing pages you read'}
       </div>
 
-      {messageError && <div class="card small err-text mb" role="alert">{messageError}</div>}
-      {notice && <div class="card small ok-text mb" role="status">{notice}</div>}
+      {messageError && (
+        <div class="card small err-text mb" role="alert">
+          {messageError}
+        </div>
+      )}
+      {notice && <output class="card small ok-text mb">{notice}</output>}
 
       <div class="card small">
         <div class={statusDot === 'ok' ? 'ok-text' : statusDot === 'err' ? 'err-text' : ''}>
@@ -202,9 +204,7 @@ function Popup() {
       )}
 
       <div class="recent">
-        {state.recent.length === 0 && (
-          <div class="muted small mt">No captures yet.</div>
-        )}
+        {state.recent.length === 0 && <div class="muted small mt">No captures yet.</div>}
         {state.recent.map((e) => (
           <div class="entry" key={e.localId}>
             <div class="row">
@@ -231,9 +231,9 @@ function Popup() {
       </div>
 
       <div class="row mt small">
-        <a href="#" onClick={(ev) => { ev.preventDefault(); chrome.runtime.openOptionsPage(); }}>
+        <button class="link-button" onClick={() => void chrome.runtime.openOptionsPage()}>
           Settings & privacy
-        </a>
+        </button>
         <span class="muted">v{chrome.runtime.getManifest().version}</span>
       </div>
     </div>

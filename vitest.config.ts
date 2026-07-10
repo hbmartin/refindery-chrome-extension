@@ -8,5 +8,16 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    coverage: {
+      provider: 'v8',
+      include: ['src/**/*.{ts,tsx}'],
+      reporter: ['text', 'json-summary', 'lcov'],
+      thresholds: {
+        statements: 70,
+        branches: 70,
+        functions: 60,
+        lines: 70,
+      },
+    },
   },
 });

@@ -49,19 +49,14 @@ export function upsertRecent(
   return write;
 }
 
-export async function findByPageId(
-  pageId: string,
-): Promise<RecentEntry | undefined> {
+export async function findByPageId(pageId: string): Promise<RecentEntry | undefined> {
   const list = await getRecent();
   return list.find((e) => e.pageId === pageId);
 }
 
 // ── Badge ────────────────────────────────────────────────────────────────
 
-export async function updateBadge(opts: {
-  queueCount: number;
-  error?: boolean;
-}): Promise<void> {
+export async function updateBadge(opts: { queueCount: number; error?: boolean }): Promise<void> {
   if (opts.error) {
     await chrome.action.setBadgeText({ text: '!' });
     await chrome.action.setBadgeBackgroundColor({ color: '#DC2626' });

@@ -19,11 +19,11 @@ function openDb(): Promise<IDBDatabase> {
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
-        const store = db.createObjectStore(STORE, {
+        const queueStore = db.createObjectStore(STORE, {
           keyPath: '_seq',
           autoIncrement: true,
         });
-        store.createIndex('id', 'id', { unique: true });
+        queueStore.createIndex('id', 'id', { unique: true });
       }
     };
     req.onsuccess = () => resolve(req.result);

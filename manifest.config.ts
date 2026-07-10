@@ -8,8 +8,7 @@ export default defineManifest({
   manifest_version: 3,
   name: 'Refindery Capture',
   version: pkg.version,
-  description:
-    'Auto-captures pages you read and ingests them into your local Refindery instance.',
+  description: 'Auto-captures pages you read and ingests them into your local Refindery instance.',
   minimum_chrome_version: '116',
   icons: {
     16: 'src/icons/icon-16.png',

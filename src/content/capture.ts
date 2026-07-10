@@ -53,7 +53,11 @@ async function buildPayload(trigger: CaptureTrigger): Promise<CapturePayload | n
   if (isPdf) {
     // PDFs: send URL-only; the server fetches/extracts.
     bodyHtml = null;
-  } else if (contentType && contentType !== 'text/html' && contentType !== 'application/xhtml+xml') {
+  } else if (
+    contentType &&
+    contentType !== 'text/html' &&
+    contentType !== 'application/xhtml+xml'
+  ) {
     // Non-HTML document (JSON, plain text, images) — skip entirely.
     return null;
   } else {

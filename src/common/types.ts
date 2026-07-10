@@ -23,21 +23,12 @@ export interface ForgetRequest {
 
 // ── Refindery API: responses ─────────────────────────────────────────────
 
-export const PAGE_STATUSES = [
-  'queued',
-  'indexing',
-  'indexed',
-  'failed',
-  'dead',
-] as const;
+export const PAGE_STATUSES = ['queued', 'indexing', 'indexed', 'failed', 'dead'] as const;
 
 export type PageStatus = (typeof PAGE_STATUSES)[number];
 
 /** Terminal states — no further polling needed. */
-export const TERMINAL_STATUSES: ReadonlySet<PageStatus> = new Set([
-  'indexed',
-  'dead',
-]);
+export const TERMINAL_STATUSES: ReadonlySet<PageStatus> = new Set(['indexed', 'dead']);
 
 export interface IngestAcceptedResponse {
   page_id: string;
