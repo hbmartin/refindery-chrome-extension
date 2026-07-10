@@ -40,14 +40,20 @@ function faviconUrl(): string | null {
 // surface even when its domain isn't on the sensitive list. Skipping these is a
 // privacy-safety default that applies even to explicit manual captures.
 function hasVisiblePasswordField(root: Document | ShadowRoot = document): boolean {
-  const fields = root.querySelectorAll<HTMLInputElement>('input[type="password"]');
-  for (const el of fields) {
-    // offsetParent is null for display:none (and for position:fixed, which may
-    // still be visible) — fall back to client rects to catch the fixed case.
-    if (el.offsetParent !== null || el.getClientRects().length > 0) return true;
-  }
-  for (const el of root.querySelectorAll('*')) {
+  // Lazily walk each tree so a match can abort without allocating a NodeList
+  // containing every element in a potentially large document.
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let el = walker.nextNode() as Element | null;
+  while (el) {
+    if (el instanceof HTMLInputElement && el.type === 'password') {
+      // offsetParent is null for display:none (and for position:fixed, which may
+      // still be visible) — fall back to client rects to catch the fixed case.
+      if (el.offsetParent !== null || el.getClientRects().length > 0) return true;
+    }
+    // Closed shadow roots expose no `.shadowRoot`, so their contents are
+    // intentionally out of reach; only open roots can be traversed.
     if (el.shadowRoot && hasVisiblePasswordField(el.shadowRoot)) return true;
+    el = walker.nextNode() as Element | null;
   }
   return false;
 }
