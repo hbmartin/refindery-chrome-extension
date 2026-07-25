@@ -24,7 +24,7 @@
     "zip:firefox": "cd dist-firefox && zip -r ../refindery-extension-firefox.zip . && cd .."
   },
   "dependencies": {
-    "dompurify": "^3.2.3",
+    "dompurify": "^3.4.12",
     "preact": "^10.25.3"
   },
   "devDependencies": {
